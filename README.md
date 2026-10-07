@@ -99,6 +99,8 @@ Verified on 72 chart images against the original stack (Python 3.8, torch 1.13.1
 compiled ops): the same instances above the 0.3 threshold on every image, mask IoU >= 0.9999, scores within
 1.1e-5, every line point within 1 px (`tools/equivalence/` holds the harness).
 
+See `rocm/INSTALL.md` for install, update and dependency rules.
+
 #### Command line
 
 `pip install --no-deps -e .` (done by `rocm/install_rocm.sh`) installs a `lineformer` command:
