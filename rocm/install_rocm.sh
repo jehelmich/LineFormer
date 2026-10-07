@@ -31,7 +31,7 @@ mkdir -p "$VENV/src"
        uv pip install $PY --no-build-isolation .)
 
 uv pip install $PY numpy==1.23.5 opencv-python scipy==1.9.3 scikit-image==0.21.0 matplotlib==3.7.5 pillow \
-    bresenham==0.2.1 tqdm chardet pycocotools terminaltables six
+    bresenham==0.2.1 tqdm chardet pycocotools terminaltables six pytest
 uv pip install $PY --no-build-isolation -e mmdetection
 uv pip install $PY --no-deps --no-build-isolation -e "$REPO"   # infer, msda_compat, the lineformer command
 

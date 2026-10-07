@@ -1,15 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "lineformer"
-version = "0.1.0"
+version = "0.2.0"
 description = "LineFormer line chart data extraction (Lal et al., ICDAR 2023), runnable on CPU, CUDA and ROCm GPUs"
 readme = "README.md"
 requires-python = ">=3.8"
-# torch, mmcv-full 1.7.x and the vendored mmdetection are installed separately (install.sh, rocm/install_rocm.sh).
+# No licence field: the upstream code has no licence from its authors; see the README section "Licensing".
+# torch, mmcv-full 1.7.x and the vendored mmdetection are installed separately (install.sh, rocm/install_rocm.sh):
+# a plain `pip install` of this package does not give a working environment.
 dependencies = ["numpy", "opencv-python", "scipy", "scikit-image", "bresenham"]
+
+[project.urls]
+Upstream = "https://github.com/TheJaeLal/LineFormer"
+Paper = "https://link.springer.com/chapter/10.1007/978-3-031-41734-4_24"
 
 [project.scripts]
 lineformer = "lineformer_cli:main"
@@ -18,3 +26,7 @@ lineformer-client = "lineformer_client:main"
 [tool.setuptools]
 py-modules = ["infer", "line_utils", "clean_chart", "msda_compat", "kept_queries", "lineformer_cli", "scale_compat",
               "tiling", "lineformer_engine", "lineformer_jobs", "lineformer_serve", "lineformer_client"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "tools/equivalence/tests"]
+addopts = "-rs"

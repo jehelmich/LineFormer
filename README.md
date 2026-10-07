@@ -1,3 +1,67 @@
+# LineFormer (fork): the same model, runnable on AMD ROCm and faster in batches
+
+This is a fork of [TheJaeLal/LineFormer](https://github.com/TheJaeLal/LineFormer), the official code of
+*LineFormer: Line Chart Data Extraction Using Instance Segmentation* (Lal et al., ICDAR 2023). It runs the same
+model with the same checkpoint and gives the same results (checked image by image against the original stack, see
+[docs/VALIDATION.md](docs/VALIDATION.md)). What it adds:
+
+* **Compatibility**: inference on GPUs without mmcv's compiled ops, e.g. AMD GPUs with ROCm, through mmcv's own
+  pure-PyTorch MultiScaleDeformableAttention (`msda_compat.py`); an install script for a current stack (Python 3.11,
+  torch 2.14 ROCm 7.2, mmcv-full 1.7.2 with CPU ops).
+* **Speed**: a kept-queries mode that post-processes only the queries that can reach the 0.3 threshold
+  (`kept_queries.py`; same lines, detector time per image 0.27 s -> 0.056 s, peak device memory ~12 GB -> 0.5 GB),
+  and a job engine
+  (`lineformer batch`, `lineformer serve`, a stdlib client) that keeps the GPU busy with parallel pre- and
+  post-processing (~20 images/s on one RX 7900 XTX, against 5.8 s per image on the original CPU stack).
+* A `lineformer` command, unit tests that run without GPU or checkpoint, and the equivalence harness used for the
+  validation (`tools/equivalence/`).
+
+This fork is not affiliated with the authors of LineFormer. If you use it, please cite their paper (see
+[Citation](#citation) below and `CITATION.cff`).
+
+## Quick start
+
+Linux or WSL2 with an AMD GPU (ROCm 7.2 in `/opt/rocm`), `git`, `gcc` with C++20 and [uv](https://docs.astral.sh/uv/):
+
+```bash
+git clone -b v0.2.0 https://github.com/jehelmich/LineFormer.git ~/LineFormer && cd ~/LineFormer
+VENV=$HOME/lineformer bash rocm/install_rocm.sh       # ~15 min (builds mmcv), ~16 GB
+# download iter_3000.pth from the authors' link under "Inference" below
+$HOME/lineformer/bin/lineformer --ckpt iter_3000.pth --out /tmp/lf_demo demo/PMC5959982___3_HTML.jpg
+# expect /tmp/lf_demo/PMC5959982___3_HTML.json with 3 lines of 621 points
+```
+
+A plain `pip install git+...` is not enough: mmcv-full 1.7.2 has to be built against the installed torch. On NVIDIA
+GPUs or CPU only, the authors' environment (`install.sh`, below) followed by `pip install --no-deps -e .` gives the
+same commands (NVIDIA: not tested by this fork). Many images:
+
+```bash
+lineformer batch --ckpt iter_3000.pth --list images.txt --out out/ --gpu-workers 2   # one job, all cores
+lineformer serve --ckpt iter_3000.pth --port 8775 --gpu-workers 2                    # a server that owns the GPU
+```
+
+Defaults: `--device auto` (GPU if PyTorch sees one, else CPU), kept-queries mode on at 0.3 (`--all-queries` for all
+100 instances per image, as upstream). `--input-size native` and `--tile` are experimental (see
+[docs/VALIDATION.md](docs/VALIDATION.md#input-scale)). Tests: `python -m pytest` or `python tests/run_all.py`.
+
+* [rocm/INSTALL.md](rocm/INSTALL.md): install, update, environment check, use (batch, serve, client, Python)
+* [docs/VALIDATION.md](docs/VALIDATION.md): how equivalence and speed were measured, and the limits
+* [CHANGELOG.md](CHANGELOG.md): changes against upstream
+
+## Licensing
+
+* The upstream LineFormer code and the checkpoint carry no licence from their authors, so all rights are reserved by
+  default (see upstream issue [#12](https://github.com/TheJaeLal/LineFormer/issues/12)). Users who need clear rights
+  should contact the authors. This fork therefore has no top-level LICENSE file.
+* The vendored `mmdetection/` is Apache-2.0 (OpenMMLab, see its `LICENSE`).
+* The files added in this fork are Apache-2.0 ([LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt); each carries an
+  SPDX header). The modifications to upstream files (`infer.py`, `README.md`, `.gitignore`) are contributed under
+  Apache-2.0 as far as they are separable from the upstream code.
+
+---
+
+*The authors' original README follows, unchanged.*
+
 # LineFormer - Rethinking Chart Data Extraction as Instance Segmentation,
 Jay Lal, Aditya Mitkari*, [Mahesh Bhosale*](https://bhosalems.github.io/), David Doermann, International Conference on Document Analysis and Recognition, 2023.
 
@@ -68,100 +132,6 @@ Example extraction result:
 
 ![input image](demo/PMC5959982___3_HTML.jpg "Input")
 ![demo result](demo/sample_result.png "Detection Result")
-
-### Running on AMD ROCm / without compiled GPU ops
-
-The only compiled mmcv op LineFormer needs on a GPU is `MultiScaleDeformableAttention` (pixel decoder).
-mmcv also ships the same algorithm in pure PyTorch (`multi_scale_deformable_attn_pytorch`, the path it always
-takes for CPU tensors). `infer.load_model` takes an optional `msda` argument (or the environment variable
-`LINEFORMER_MSDA`) that chooses the path on a GPU:
-
-* `auto` (default): mmcv's compiled kernel if a tiny call through it runs on the device, else the pure-PyTorch one;
-* `compiled`: the compiled kernel; raises if mmcv was built without it;
-* `pytorch`: the pure-PyTorch implementation.
-
-The chosen path is printed once. On `cpu` nothing changes. Thresholds, preprocessing and postprocessing are
-the same on every device; the order of the returned instances (and so of the lines from `get_dataseries`) can
-differ between CPU and GPU.
-
-```python
-infer.load_model(CONFIG, CKPT, "cuda", msda="auto")  # "cuda" / "cuda:0" also selects an AMD GPU with ROCm PyTorch
-```
-
-Tested setup: AMD Radeon RX 7900 XTX (gfx1100), ROCm 7.2.0, WSL2 Ubuntu 24.04, Python 3.11.17,
-torch 2.14.1+rocm7.2, torchvision 0.29.1+rocm7.2 (download.pytorch.org/whl/rocm7.2), mmcv-full 1.7.2 built
-from source with CPU ops only, mmdet 2.28.2 (vendored), numpy 1.23.5, opencv-python 4.11.0.86, scipy 1.9.3,
-scikit-image 0.21.0. `rocm/install_rocm.sh` builds this environment; `rocm/mmcv-1.7.2-cpu-ops.patch` makes mmcv's
-`setup.py` compile with C++20 (needed by the headers of torch >= 2.10) and skip its CUDA/HIP auto-detection when
-`MMCV_CPU_ONLY=1`. Under WSL the wheel's `libhsa-runtime64.so` is replaced by the one from `/opt/rocm`.
-
-Verified on 72 chart images against the original stack (Python 3.8, torch 1.13.1 CPU, mmcv-full 1.7.2 with
-compiled ops): the same instances above the 0.3 threshold on every image, mask IoU >= 0.9999, scores within
-1.1e-5, every line point within 1 px (`tools/equivalence/` holds the harness).
-
-See `rocm/INSTALL.md` for install, update and dependency rules.
-
-#### Kept-queries mode (opt-in speed-up)
-
-mmdet upsamples all 100 query masks to the original image size, scores and copies every one, although only a few
-reach LineFormer's 0.3 threshold. The final score is class score x mask score with mask score <= 1, so a query whose
-class score is below 0.3 cannot reach 0.3. `kept_queries.py` drops those queries before the upsample and does the
-rest on the device for the kept ones only (same mmdet operations), with one host copy for their masks:
-
-```python
-infer.load_model(CONFIG, CKPT, "cuda", kept_only=True)  # or kept_only=0.25; env LINEFORMER_KEPT_QUERIES=on|<thr>
-```
-
-`lineformer --kept-only [--kept-thr 0.3]` on the command line. Default: off (mmdet untouched). **Instances whose class
-score is below the threshold are not returned** (the box array has one row per kept query, a few of which can still
-have a final score below the threshold); code that reads low-scoring instances must leave the mode off. It is refused
-with an error unless mmdet is 2.28.2 with unchanged source of the reproduced functions, and the model has one thing
-class and no stuff class.
-
-Measured on the same 72 images on the RX 7900 XTX: the kept masks are bit-identical to the unpatched path (126 of 126
-instances), scores within 2.3e-6 (the unpatched GPU path itself varies by up to 1.4e-6 between runs), dataseries
-identical, and the acceptance against the original stack passes on 72 of 72 images. Detector time per image 0.27 s ->
-0.056 s, peak device memory per process 12 GB -> 0.5 GB; with `tools/throughput/batch_infer.py` 2.5 -> 5.3 images/s
-in one process, 3.4 -> 18.7 images/s pipelined (one GPU worker), 20.6 images/s with two GPU workers.
-
-#### Command line
-
-`pip install --no-deps -e .` (done by `rocm/install_rocm.sh`) installs a `lineformer` command:
-
-```bash
-lineformer --ckpt iter_3000.pth --device cuda:0 --out out/ chart1.png chart2.png
-lineformer --ckpt iter_3000.pth --list images.txt --out out/ --masks   # one path per line; also the kept masks
-```
-
-It writes `<out>/<stem>.json` (`{"image": ..., "lines": [[{"x":..,"y":..}, ...], ...]}`, from `get_dataseries`)
-and with `--masks` `<stem>.masks.npz`; existing outputs are skipped unless `--force`. `--kept-only` switches on the
-kept-queries mode above (same lines, about 4x less GPU time per image).
-
-#### Batch jobs and a job server
-
-`lineformer batch` runs a list of images through the job engine (`lineformer_engine.py`: pre-processing
-workers -> N GPU workers, each with its own model and a share of the device memory -> post-processing workers);
-`lineformer serve` keeps the models loaded and takes jobs over a local HTTP JSON API, so several callers share
-one owner of the GPU. `lineformer_client.py` is a standard-library client (no torch) for other environments.
-
-```bash
-lineformer batch --ckpt iter_3000.pth --list images.txt --out out/ --kept-only --gpu-workers 2 --pre-workers 8
-lineformer serve --ckpt iter_3000.pth --port 8775 --kept-only --gpu-workers 2 --pre-workers 8
-```
-
-```python
-from lineformer_client import LineFormerClient
-lf = LineFormerClient("http://127.0.0.1:8775")
-lf.wait(lf.submit(["/abs/chart1.png", "/abs/chart2.png"], out="/abs/out", instances=True))
-```
-
-Per image `<id>.json` (the lines of `get_dataseries`, provenance, timings), optionally `<id>.instances.npz` and
-`<id>.masks.npz`, and a `job.json` manifest per job; atomic writes, skip-if-done, an unreadable image fails alone,
-out of GPU memory ends the job loudly. Outputs were checked with `tools/equivalence` against the reference runs
-(same acceptance, 72 of 72 images); ~20 images/s with `--kept-only` and two GPU workers on the RX 7900 XTX.
-Details, options and recommended settings: `rocm/INSTALL.md` (Use) and `rocm/NOTES.md`.
-
-Please cite the LineFormer paper (see [Citation](#citation) and `CITATION.cff`) when you use this code.
 
 ## Citation
 If you found our work useful, please cite us as follows:
