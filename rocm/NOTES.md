@@ -54,3 +54,49 @@ branch. `auto` makes a tiny call through the compiled function (after `get_compi
 
 `tools/equivalence/` compares a CPU run and a GPU run image by image (see the docstrings of `run.py` and
 `compare.py`).
+
+## Kept-queries mode (`kept_queries.py`, opt-in)
+
+Where the GPU time went without it (pytorch MSDA, `profile_forward.py`, median of 10 images of 1.5-3.5k px): forward
+0.247 s, of which the network ~0.05 s (pixel decoder 0.025 s), upsample + scoring of all 100 query masks + the unused
+panoptic map ~0.09 s, device->host copies 0.10 s (one per mask, plus several per mask in `mask2bbox`). Peak 12 GB
+per process.
+
+The mode patches `simple_test` of the detector and of its fusion head on the model instance (not on the classes):
+class scores and `topk` exactly as mmdet computes them, keep class score >= threshold (default 0.3; final score =
+class score x mask score <= class score, checked at run time: a mask score > 1 raises), then upsample, crop, rescale
+and mask scores for the kept queries only, a loop-free `mask2bbox` (same integer boxes, unit-tested against mmdet's),
+one host copy of the kept masks. The panoptic map is skipped (mmdet discards it when there are no stuff classes).
+Instances below the threshold are not returned. Enabling raises unless mmdet is 2.28.2, the sha256 of the source of
+every reproduced mmdet function matches the recorded one, the model has 1 thing class and 0 stuff classes, and
+`instance_on` is set. No change in the vendored `mmdetection/`.
+
+With the mode on, per image (same profile): forward 0.052 s, host copies 0.001 s, `get_dataseries` 0.069 s
+(was 0.266 s).
+
+Verification (72 images, RX 7900 XTX, pytorch MSDA):
+- CPU, mode off / on / off in one process (`tools/equivalence/kept_check.py`, 3 images): kept masks and boxes
+  bit-identical, scores within 6e-8 (sums over fewer rows), dataseries identical.
+- GPU, the same check on 72 images: 126 kept instances, all with bit-identical masks and boxes, scores bit-identical on
+  94, max difference 2.3e-6; for comparison the unpatched path repeated in the same process was bit-identical on only
+  34 of 72 images (its scores vary run to run). Every instance with final score >= 0.3 kept (125; one more kept
+  query has class score >= 0.3 and final score < 0.3); highest final score among the dropped: 0.215. Dataseries
+  identical on 72 of 72.
+- `compare.py` of a `run.py --kept-only 0.3` GPU run against the earlier unpatched GPU runs and against the original
+  CPU stack: PASS 72/72 each. Against the unpatched GPU run: all 126 instances bit-identical masks, max score
+  difference 1.7e-6 (two unpatched GPU runs differ from each other by up to 1.4e-6), dataseries identical on 72.
+
+Speed (`tools/throughput/batch_infer.py`, 72 images, `--repeat 2`; "off" from the earlier E1/E2 runs with
+`--repeat 5`). All "on" runs had the card to themselves except the end of the last one, where another job started:
+
+| config | images/s off | images/s on | GPU stage s/image on | peak allocated / reserved per process on |
+|---|---|---|---|---|
+| serial (one process) | 2.48 | 5.26 | 0.053 | 0.48 / 0.76 GB |
+| E1 pipeline, 1 GPU worker | 3.35 | 18.7 | 0.049 | 0.48 / 0.71 GB |
+| E2, 2 GPU workers | - | 20.6 | 0.061 | 0.48 / 0.76 GB |
+| E2, 3 GPU workers | - | 20.2 | 0.069 | 0.48 / 0.70 GB |
+| E2, 4 GPU workers | - | 15.1 | 0.090 | 0.48 / 0.66 GB |
+
+With the mode on, one pipelined GPU worker keeps the GPU stage busy 90 % of the time; a second worker adds ~10 %;
+three or four lose to CPU contention (every ROCm process under WSL keeps ~2 cores busy, plus pre/post workers).
+Every timed pass gave the same dataseries as pass 0, and each run passed the acceptance against both references.

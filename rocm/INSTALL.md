@@ -53,6 +53,7 @@ skipped):
 
 ```bash
 $VENV/bin/lineformer --ckpt iter_3000.pth --device cuda:0 --out out/ --list images.txt
+$VENV/bin/lineformer --ckpt iter_3000.pth --device cuda:0 --out out/ --list images.txt --kept-only  # faster, see notes
 ```
 
 Python, inside the venv (`infer` is importable from anywhere after the install):
@@ -71,5 +72,11 @@ Notes:
 - One GPU process peaks at ~12 GB device memory on 1.5-3.5k px images (mmdet upsamples all 100 candidate masks).
   Run one GPU process per 24 GB card, or several through `tools/throughput/batch_infer.py --gpu-workers N`,
   which splits `--gpu-mem-budget` between them.
+- Kept-queries mode (opt-in, `kept_queries.py`): `infer.load_model(..., kept_only=True)`, `lineformer --kept-only`,
+  `batch_infer.py --kept-only 0.3` or env `LINEFORMER_KEPT_QUERIES=on`. Only the queries whose class score reaches
+  0.3 are upsampled, scored and copied: the same lines from `get_dataseries`, ~0.5 GB peak per process instead of
+  ~12 GB, ~0.05 s instead of ~0.27 s GPU time per image. Instances below the threshold are not returned, so leave it
+  off for anything that reads low-scoring instances. Check: `tools/equivalence/kept_check.py` (mode off / on / off
+  in one process, kept instances must be bit-identical).
 - Under WSL every process that initialises the ROCm runtime keeps ~2 CPU cores busy; prefer one long-lived
   process over many short ones.

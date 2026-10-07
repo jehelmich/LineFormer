@@ -101,6 +101,29 @@ compiled ops): the same instances above the 0.3 threshold on every image, mask I
 
 See `rocm/INSTALL.md` for install, update and dependency rules.
 
+#### Kept-queries mode (opt-in speed-up)
+
+mmdet upsamples all 100 query masks to the original image size, scores and copies every one, although only a few
+reach LineFormer's 0.3 threshold. The final score is class score x mask score with mask score <= 1, so a query whose
+class score is below 0.3 cannot reach 0.3. `kept_queries.py` drops those queries before the upsample and does the
+rest on the device for the kept ones only (same mmdet operations), with one host copy for their masks:
+
+```python
+infer.load_model(CONFIG, CKPT, "cuda", kept_only=True)  # or kept_only=0.25; env LINEFORMER_KEPT_QUERIES=on|<thr>
+```
+
+`lineformer --kept-only [--kept-thr 0.3]` on the command line. Default: off (mmdet untouched). **Instances whose class
+score is below the threshold are not returned** (the box array has one row per kept query, a few of which can still
+have a final score below the threshold); code that reads low-scoring instances must leave the mode off. It is refused
+with an error unless mmdet is 2.28.2 with unchanged source of the reproduced functions, and the model has one thing
+class and no stuff class.
+
+Measured on the same 72 images on the RX 7900 XTX: the kept masks are bit-identical to the unpatched path (126 of 126
+instances), scores within 2.3e-6 (the unpatched GPU path itself varies by up to 1.4e-6 between runs), dataseries
+identical, and the acceptance against the original stack passes on 72 of 72 images. Detector time per image 0.27 s ->
+0.056 s, peak device memory per process 12 GB -> 0.5 GB; with `tools/throughput/batch_infer.py` 2.5 -> 5.3 images/s
+in one process, 3.4 -> 18.7 images/s pipelined (one GPU worker), 20.6 images/s with two GPU workers.
+
 #### Command line
 
 `pip install --no-deps -e .` (done by `rocm/install_rocm.sh`) installs a `lineformer` command:
@@ -111,7 +134,8 @@ lineformer --ckpt iter_3000.pth --list images.txt --out out/ --masks   # one pat
 ```
 
 It writes `<out>/<stem>.json` (`{"image": ..., "lines": [[{"x":..,"y":..}, ...], ...]}`, from `get_dataseries`)
-and with `--masks` `<stem>.masks.npz`; existing outputs are skipped unless `--force`.
+and with `--masks` `<stem>.masks.npz`; existing outputs are skipped unless `--force`. `--kept-only` switches on the
+kept-queries mode above (same lines, about 4x less GPU time per image).
 
 Please cite the LineFormer paper (see [Citation](#citation) and `CITATION.cff`) when you use this code.
 
