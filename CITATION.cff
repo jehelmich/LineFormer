@@ -1,0 +1,46 @@
+cff-version: 1.2.0
+message: "If you use LineFormer, please cite the ICDAR 2023 paper below."
+title: "LineFormer"
+repository-code: "https://github.com/TheJaeLal/LineFormer"
+authors:
+  - family-names: Lal
+    given-names: Jay
+  - family-names: Mitkari
+    given-names: Aditya
+  - family-names: Bhosale
+    given-names: Mahesh
+  - family-names: Doermann
+    given-names: David
+preferred-citation:
+  type: conference-paper
+  title: "LineFormer: Line Chart Data Extraction Using Instance Segmentation"
+  authors:
+    - family-names: Lal
+      given-names: Jay
+    - family-names: Mitkari
+      given-names: Aditya
+    - family-names: Bhosale
+      given-names: Mahesh
+    - family-names: Doermann
+      given-names: David
+  editors:
+    - family-names: Fink
+      given-names: Gernot A.
+    - family-names: Jain
+      given-names: Rajiv
+    - family-names: Kise
+      given-names: Koichi
+    - family-names: Zanibbi
+      given-names: Richard
+  collection-title: "Document Analysis and Recognition - ICDAR 2023"
+  conference:
+    name: "International Conference on Document Analysis and Recognition (ICDAR 2023)"
+  publisher:
+    name: "Springer Nature Switzerland"
+    city: "Cham"
+  year: 2023
+  start: 387
+  end: 400
+  isbn: "978-3-031-41734-4"
+  doi: "10.1007/978-3-031-41734-4_24"
+  url: "https://link.springer.com/chapter/10.1007/978-3-031-41734-4_24"

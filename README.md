@@ -69,6 +69,34 @@ Example extraction result:
 ![input image](demo/PMC5959982___3_HTML.jpg "Input")
 ![demo result](demo/sample_result.png "Detection Result")
 
+### Running on AMD ROCm / without compiled GPU ops
+
+The only compiled mmcv op LineFormer needs on a GPU is `MultiScaleDeformableAttention` (pixel decoder).
+mmcv also ships the same algorithm in pure PyTorch (`multi_scale_deformable_attn_pytorch`, the path it always
+takes for CPU tensors). `infer.load_model` takes an optional `msda` argument (or the environment variable
+`LINEFORMER_MSDA`) that chooses the path on a GPU:
+
+* `auto` (default): mmcv's compiled kernel if a tiny call through it runs on the device, else the pure-PyTorch one;
+* `compiled`: the compiled kernel; raises if mmcv was built without it;
+* `pytorch`: the pure-PyTorch implementation.
+
+The chosen path is printed once. On `cpu` nothing changes. Thresholds, preprocessing and postprocessing are
+the same on every device; the order of the returned instances (and so of the lines from `get_dataseries`) can
+differ between CPU and GPU.
+
+```python
+infer.load_model(CONFIG, CKPT, "cuda", msda="auto")  # "cuda" / "cuda:0" also selects an AMD GPU with ROCm PyTorch
+```
+
+Tested setup: AMD Radeon RX 7900 XTX (gfx1100), ROCm 7.2.0, WSL2 Ubuntu 24.04, Python 3.11.17,
+torch 2.14.1+rocm7.2, torchvision 0.29.1+rocm7.2 (download.pytorch.org/whl/rocm7.2), mmcv-full 1.7.2 built
+from source with CPU ops only, mmdet 2.28.2 (vendored), numpy 1.23.5, opencv-python 4.11.0.86, scipy 1.9.3,
+scikit-image 0.21.0. `rocm/install_rocm.sh` builds this environment; `rocm/mmcv-1.7.2-cpu-ops.patch` makes mmcv's
+`setup.py` compile with C++20 (needed by the headers of torch >= 2.10) and skip its CUDA/HIP auto-detection when
+`MMCV_CPU_ONLY=1`. Under WSL the wheel's `libhsa-runtime64.so` is replaced by the one from `/opt/rocm`.
+
+Please cite the LineFormer paper (see [Citation](#citation) and `CITATION.cff`) when you use this code.
+
 ## Citation
 If you found our work useful, please cite us as follows:
 ```bib
