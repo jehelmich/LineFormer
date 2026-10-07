@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lineformer"
+version = "0.1.0"
+description = "LineFormer line chart data extraction (Lal et al., ICDAR 2023), runnable on CPU, CUDA and ROCm GPUs"
+readme = "README.md"
+requires-python = ">=3.8"
+# torch, mmcv-full 1.7.x and the vendored mmdetection are installed separately (install.sh, rocm/install_rocm.sh).
+dependencies = ["numpy", "opencv-python", "scipy", "scikit-image", "bresenham"]
+
+[project.scripts]
+lineformer = "lineformer_cli:main"
+
+[tool.setuptools]
+py-modules = ["infer", "line_utils", "clean_chart", "msda_compat", "lineformer_cli"]

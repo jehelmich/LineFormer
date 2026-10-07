@@ -95,6 +95,22 @@ scikit-image 0.21.0. `rocm/install_rocm.sh` builds this environment; `rocm/mmcv-
 `setup.py` compile with C++20 (needed by the headers of torch >= 2.10) and skip its CUDA/HIP auto-detection when
 `MMCV_CPU_ONLY=1`. Under WSL the wheel's `libhsa-runtime64.so` is replaced by the one from `/opt/rocm`.
 
+Verified on 72 chart images against the original stack (Python 3.8, torch 1.13.1 CPU, mmcv-full 1.7.2 with
+compiled ops): the same instances above the 0.3 threshold on every image, mask IoU >= 0.9999, scores within
+1.1e-5, every line point within 1 px (`tools/equivalence/` holds the harness).
+
+#### Command line
+
+`pip install --no-deps -e .` (done by `rocm/install_rocm.sh`) installs a `lineformer` command:
+
+```bash
+lineformer --ckpt iter_3000.pth --device cuda:0 --out out/ chart1.png chart2.png
+lineformer --ckpt iter_3000.pth --list images.txt --out out/ --masks   # one path per line; also the kept masks
+```
+
+It writes `<out>/<stem>.json` (`{"image": ..., "lines": [[{"x":..,"y":..}, ...], ...]}`, from `get_dataseries`)
+and with `--masks` `<stem>.masks.npz`; existing outputs are skipped unless `--force`.
+
 Please cite the LineFormer paper (see [Citation](#citation) and `CITATION.cff`) when you use this code.
 
 ## Citation
