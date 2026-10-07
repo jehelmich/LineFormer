@@ -38,10 +38,14 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--thr", type=float, default=0.3)
     ap.add_argument("--out", required=True, help="json file")
+    ap.add_argument("--mem-fraction", type=float, default=None,
+                    help="cap this process's GPU memory (torch.cuda.set_per_process_memory_fraction) on a shared card")
     args = ap.parse_args(argv)
     args.kept_only = False  # load unpatched; the mode is switched per call below
     import cv2
     import torch
+    if args.mem_fraction and str(args.device).startswith("cuda"):
+        torch.cuda.set_per_process_memory_fraction(args.mem_fraction, torch.device(args.device))
     from mmdet.apis import inference_detector
     items = common.read_image_list(args.images)
     if args.limit:
