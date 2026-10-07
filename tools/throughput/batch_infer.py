@@ -43,7 +43,6 @@ to its role's --*-threads (defaults 1 for pre/post, 2 for GPU processes).
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import platform
@@ -72,158 +71,12 @@ def _setup_repo(repo):
     os.chdir(repo)
 
 
-def _cpu_only_torch():
-    """For the CPU worker processes (pre/post), before mmcv is imported. Under WSL + ROCm 7.2, the first
-    torch.cuda.is_available() call (mmcv does it at import) starts the HSA runtime, whose two threads then spin at
-    100 % for the life of the process (measured: 4.0 CPU-s per 2 s idle, with or without visible devices). These
-    workers never touch a GPU, so the probe answers False here. GPU processes are left alone."""
-    import torch
-    torch.cuda.is_available = lambda: False
-    torch.cuda.device_count = lambda: 0
-
-
-def _apply_threads(n):
-    import torch
-    import cv2
-    torch.set_num_threads(n)
-    cv2.setNumThreads(n)
-
-
-def _sync(device):
-    import torch
-    if str(device).startswith("cuda"):
-        torch.cuda.synchronize()
-
-
-def build_test_pipeline(cfg):
-    """First half of mmdet.apis.inference_detector for ndarray input (verbatim)."""
-    from mmdet.datasets import replace_ImageToTensor
-    from mmdet.datasets.pipelines import Compose
-    cfg = cfg.copy()
-    cfg.data.test.pipeline[0].type = 'LoadImageFromWebcam'
-    cfg.data.test.pipeline = replace_ImageToTensor(cfg.data.test.pipeline)
-    return Compose(cfg.data.test.pipeline)
-
-
-def preprocess(pipeline, img):
-    data = dict(img=img)
-    return pipeline(data)
-
-
-def data_shape(data):
-    imgs = data['img']
-    if len(imgs) != 1:
-        raise RuntimeError("expected one test-time augmentation, got %d" % len(imgs))
-    return tuple(imgs[0].data.shape)
-
-
-def forward(model, datas):
-    """Second half of mmdet.apis.inference_detector (verbatim), for a list of pre-processed images that must all
-    have one tensor shape (so mmcv's collate pads nothing). Returns the list of per-image results."""
-    import torch
-    from mmcv.parallel import collate, scatter
-    shapes = sorted(set(data_shape(d) for d in datas))
-    if len(shapes) != 1:
-        raise RuntimeError("batch with several tensor shapes %s: collate would pad" % shapes)
-    device = next(model.parameters()).device
-    data = collate(datas, samples_per_gpu=len(datas))
-    data['img_metas'] = [img_metas.data[0] for img_metas in data['img_metas']]
-    data['img'] = [img.data[0] for img in data['img']]
-    if next(model.parameters()).is_cuda:
-        data = scatter(data, [device])[0]
-    with torch.no_grad():
-        results = model(return_loss=False, rescale=True, **data)
-    # no padding: every image fills the batch input exactly
-    for metas in data['img_metas']:
-        for m in metas:
-            if tuple(m['img_shape'][:2]) != tuple(m['batch_input_shape']) or \
-                    tuple(m.get('pad_shape', m['img_shape'])[:2]) != tuple(m['img_shape'][:2]):
-                raise RuntimeError("padding in batch: img_shape %s pad_shape %s batch_input_shape %s" % (
-                    m['img_shape'], m.get('pad_shape'), m['batch_input_shape']))
-    if len(results) != len(datas):
-        raise RuntimeError("%d results for %d images" % (len(results), len(datas)))
-    return results
-
-
-def dataseries_from_result(infer, result):
-    """infer.get_dataseries(img, to_clean=False, return_masks=True) with the forward replaced by `result`."""
-    orig = infer.do_instance
-    infer.do_instance = lambda model, img, score_thr=0.3: infer.parse_result(result, score_thr)
-    if not hasattr(infer, "model"):
-        infer.model = None
-    try:
-        return infer.get_dataseries(None, to_clean=False, return_masks=True)
-    finally:
-        infer.do_instance = orig
-
-
-def ds_hashes(ds):
-    s = json.dumps(ds, sort_keys=True)
-    lines = sorted(json.dumps(line, sort_keys=True) for line in ds)
-    return hashlib.sha1(s.encode()).hexdigest()[:16], hashlib.sha1("\n".join(lines).encode()).hexdigest()[:16]
-
-
-# ------------------------------------------------------------------ result transfer (shared memory)
-
-def _shm_create(nbytes):
-    from multiprocessing import shared_memory, resource_tracker
-    shm = shared_memory.SharedMemory(create=True, size=max(1, nbytes))
-    try:  # the consumer unlinks it; keep the creator's tracker from unlinking or warning (py < 3.13)
-        resource_tracker.unregister(shm._name, "shared_memory")
-    except Exception:
-        pass
-    return shm
-
-
-def pack_result(result, transfer):
-    """mmdet instance result (bbox_results, mask_results) -> picklable dict, masks in one shm block."""
-    import numpy as np
-    bbox_results, mask_results = result
-    keep = []
-    for b, ms in zip(bbox_results, mask_results):
-        if len(ms) != len(b):
-            raise RuntimeError("%d boxes but %d masks" % (len(b), len(ms)))
-        if transfer == "all":
-            keep.append(list(range(len(ms))))
-        elif transfer == "kept":
-            keep.append([int(i) for i in np.nonzero(b[:, 4] > SCORE_THR)[0]])
-        else:
-            raise ValueError(transfer)
-    sel = [ms[j] for ms, k in zip(mask_results, keep) for j in k]
-    hw = tuple(sel[0].shape) if sel else (0, 0)
-    for m in sel:
-        if m.shape != hw or m.dtype != bool:
-            raise RuntimeError("mask %s %s, expected %s bool" % (m.shape, m.dtype, hw))
-    n = len(sel)
-    shm = _shm_create(n * hw[0] * hw[1])
-    arr = np.ndarray((n,) + hw, dtype=bool, buffer=shm.buf)
-    for i, m in enumerate(sel):
-        arr[i] = m
-    del arr
-    name = shm.name
-    shm.close()
-    n_masks = [len(ms) for ms in mask_results]
-    return dict(bbox=bbox_results, keep=keep, n_masks=n_masks, shm=name, shape=(n,) + hw)
-
-
-def unpack_result(p):
-    """-> (bbox_results, mask_results) as mmdet returns it; masks not transferred are None."""
-    import numpy as np
-    from multiprocessing import shared_memory
-    shm = shared_memory.SharedMemory(name=p["shm"])
-    try:
-        arr = np.array(np.ndarray(tuple(p["shape"]), dtype=bool, buffer=shm.buf))  # copy, then free the block
-    finally:
-        shm.close()
-        shm.unlink()
-    mask_results, k = [], 0
-    for n, keep in zip(p["n_masks"], p["keep"]):
-        ms = [None] * n
-        for j in keep:
-            ms[j] = arr[k]
-            k += 1
-        mask_results.append(ms)
-    return p["bbox"], mask_results
+# The pieces below are the engine's (lineformer_engine.py, moved there from this file); this runner keeps its own
+# names for them.
+sys.path.insert(1, str(HERE.parent.parent))
+from lineformer_engine import (  # noqa: E402  (no torch / mmcv import at module level)
+    apply_threads as _apply_threads, build_test_pipeline, cpu_only_torch as _cpu_only_torch, data_shape,
+    dataseries_from_result, ds_hashes, forward, pack_result, preprocess, sync as _sync, unpack_result)
 
 
 # ------------------------------------------------------------------ post-processing (shared by all modes)
