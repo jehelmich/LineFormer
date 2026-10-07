@@ -5,8 +5,9 @@
 mmcv 1.7.x runs MSDA through its compiled extension (``MultiScaleDeformableAttnFunction``)
 when the input is a CUDA/HIP tensor, and through the pure-PyTorch reference
 ``multi_scale_deformable_attn_pytorch`` (same algorithm, built on ``F.grid_sample``) otherwise.
-An mmcv-full built with CPU ops only (e.g. on AMD ROCm, where the HIP kernels are not built)
-has no GPU kernel, so inference on the GPU fails inside the pixel decoder.
+The pure-Python mmcv subset vendored in third_party/mmcv (the default install) has no compiled
+kernel at all, and an mmcv-full built with CPU ops only has no GPU kernel: on the GPU, mmcv's
+compiled branch then fails inside the pixel decoder. ``auto`` resolves to ``pytorch`` for both.
 
 Modes:
   ``compiled``  use mmcv's compiled GPU kernel; raise if it is not usable.

@@ -15,7 +15,7 @@ import unittest
 # find_spec only: importing mmcv here would probe the GPU before the CPU-only patch below.
 _MISSING = [m for m in ('torch', 'mmcv', 'mmdet') if importlib.util.find_spec(m) is None]
 if _MISSING:
-    raise unittest.SkipTest('needs torch, mmcv-full and mmdet (rocm/install_rocm.sh); missing: %s'
+    raise unittest.SkipTest('needs torch, mmcv (third_party/mmcv) and mmdet (rocm/install_rocm.sh); missing: %s'
                             % ', '.join(_MISSING))
 import torch  # noqa: E402
 

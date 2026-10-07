@@ -423,7 +423,7 @@ def versions():
     """Package versions without importing torch / mmcv in this process."""
     from importlib import metadata
     out = {'python': sys.version.split()[0], 'platform': platform.platform(), 'engine': jobs.ENGINE_VERSION}
-    for name in ('lineformer', 'torch', 'mmcv-full', 'mmdet', 'numpy', 'opencv-python'):
+    for name in ('lineformer', 'torch', 'mmcv', 'mmdet', 'numpy', 'opencv-python'):
         try:
             out[name] = metadata.version(name)
         except Exception as e:

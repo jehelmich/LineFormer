@@ -2,47 +2,57 @@
 <!-- Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer) -->
 # Install, update and use (ROCm / CUDA / CPU)
 
-LineFormer needs its own Python environment: mmcv-full 1.7.x, mmdet 2.x and numpy 1.23 do not mix with current
-stacks. Keep it separate from the project that calls it, and call it as a command, a subprocess or over HTTP
-(`lineformer serve`).
+LineFormer needs its own Python environment: the vendored mmcv 1.7 subset and mmdet 2.x pin numpy and friends to
+versions that do not mix with current stacks. Keep it separate from the project that calls it, and call it as a
+command, a subprocess or over HTTP (`lineformer serve`).
 
 ## Why not `pip install git+https://...`
 
-`pyproject.toml` installs only this repository's modules and the `lineformer` commands. torch, mmcv-full and the
-vendored mmdetection are not on PyPI in a usable form for this stack: mmcv-full 1.7.2 must be compiled against the
-installed torch (with a patch for torch >= 2.10), and torch for ROCm comes from its own index. `install_rocm.sh`
-does all of it in the right order.
+`pyproject.toml` installs only this repository's modules and the `lineformer` commands. torch for ROCm comes from
+its own index, and mmcv and mmdetection are installed from the checkout: `third_party/mmcv` is the pure-Python part
+of mmcv 1.7.2 that inference uses (no compiled ops; see its `NOTICE.md`), `mmdetection/` is mmdet 2.28.2.
+`install_rocm.sh` does all of it in the right order. Nothing is compiled.
 
 ## Fresh install (AMD GPU, Linux or WSL2)
 
-Needs ROCm in `/opt/rocm` (tested 7.2.0), `git`, `gcc` with C++20, and [uv](https://docs.astral.sh/uv/).
+Needs ROCm in `/opt/rocm` (tested 7.2.0), `git` and [uv](https://docs.astral.sh/uv/). No compiler.
 
 ```bash
 git clone -b v0.2.0 https://github.com/jehelmich/LineFormer.git ~/LineFormer   # or -b main for the newest
 cd ~/LineFormer
-VENV=$HOME/lineformer bash rocm/install_rocm.sh     # ~15 min (mmcv build), ~16 GB
+VENV=$HOME/lineformer bash rocm/install_rocm.sh     # ~16 GB; 12 s with the wheels in uv's cache
 ```
 
 The script creates the venv (Python 3.11), installs torch 2.14.1+rocm7.2 and torchvision 0.29.1+rocm7.2, swaps in
-`/opt/rocm`'s `libhsa-runtime64.so` under WSL, builds mmcv-full 1.7.2 with CPU ops only, installs the pinned
-dependencies, pytest, the vendored mmdetection and this repository (editable), and prints
+`/opt/rocm`'s `libhsa-runtime64.so` under WSL, installs the pinned dependencies, pytest, the vendored mmcv subset,
+the vendored mmdetection and this repository (all three editable), and prints
 `torch.__version__ torch.version.hip torch.cuda.is_available()` - the last value must be `True`.
 
 The checkpoint is not in the repository: download `iter_3000.pth` from the authors' link in the main README.
 
-NVIDIA GPU or CPU only: the authors' environment (`install.sh`: Python 3.8, torch 1.13.1, CUDA 11.7, mmcv-full via
-`mim`) and then `pip install --no-deps -e .` in the checkout. mmcv's compiled MSDA kernel is then used
-(`--msda auto`). Not tested by this fork.
+CPU only: the same script with the CPU wheels of torch (tested):
+
+```bash
+TORCH_INDEX=https://download.pytorch.org/whl/cpu TORCH_PKGS="torch==2.14.1 torchvision==0.29.1" \
+    VENV=$HOME/lineformer_cpu bash rocm/install_rocm.sh
+```
+
+NVIDIA GPU: the same with the CUDA index of PyTorch (`TORCH_INDEX=https://download.pytorch.org/whl/cu<version>`) and
+the matching `TORCH_PKGS` (not tested by this fork). MultiScaleDeformableAttention then runs mmcv's pure-PyTorch implementation on the GPU, as on
+ROCm (`--msda auto` resolves to `pytorch`: the subset has no compiled kernel). For mmcv's compiled CUDA kernel, use
+the authors' environment instead (`install.sh`: Python 3.8, torch 1.13.1, CUDA 11.7, mmcv-full via `mim`, then
+`pip install --no-deps -e .` in the checkout; not tested by this fork).
 
 ### What the script works around (tested setup)
 
 1. WSL only: the `libhsa-runtime64.so` bundled with the torch wheel does not see the GPU
    (`torch.cuda.is_available()` is False). It is replaced by the system one from `/opt/rocm/lib`; the original is
    kept in `$VENV/torch_lib_backup/`. On native Linux this step is skipped (untested).
-2. mmcv `setup.py`, patch `mmcv-1.7.2-cpu-ops.patch`: `-std=c++20` for torch >= 2.10 (its headers require C++20),
-   and `MMCV_CPU_ONLY=1` skips the GPU branch, which mmcv would otherwise build on its own because it detects ROCm
-   (`torch.version.hip`, `ROCM_HOME`) even with `FORCE_CUDA=0`. The build log says "Compiling mmcv._ext only with
-   CPU" and `mmcv.ops.get_compiling_cuda_version()` returns "not available".
+2. mmcv: no build. LineFormer inference calls no compiled mmcv op (measured: 0 calls into `mmcv._ext` on CPU and
+   GPU), so `third_party/mmcv` holds only the pure-Python modules it loads; the compiled ops that mmdet imports are
+   stand-ins that raise `OpUnavailableError` when called. Outputs are bit-identical to the earlier mmcv-full build
+   with CPU ops (`docs/VALIDATION.md`). The CPU-only variant above installed in 20 s (wheels in uv's cache) and passed the tests and the
+   demo (3 lines of 621 points).
 3. numpy 1.23.5 (mmdet 2.28 still uses `np.int`); opencv-python 4.11.0.86 (5.x needs numpy >= 2); yapf 0.40.1
    (mmcv 1.x calls `FormatCode(verify=...)`, removed later); scipy 1.9.3, scikit-image 0.21.0, matplotlib 3.7.5.
 4. No change in the vendored `mmdetection/`.
@@ -51,7 +61,8 @@ On a GPU, `msda_compat.py` chooses the MultiScaleDeformableAttention path (`auto
 `msda=` of `infer.load_model`, `--msda`, or env `LINEFORMER_MSDA`). `pytorch` sets
 `mmcv.ops.multi_scale_deform_attn.IS_CUDA_AVAILABLE = False`, so GPU tensors take mmcv's own
 `multi_scale_deformable_attn_pytorch` branch (the one CPU tensors always take); `auto` tries a tiny call through
-the compiled kernel and falls back to `pytorch`. On `cpu` nothing is changed.
+the compiled kernel and falls back to `pytorch` (always, with the vendored subset); `compiled` raises without a
+compiled kernel. On `cpu` nothing is changed.
 
 ## Check an environment
 

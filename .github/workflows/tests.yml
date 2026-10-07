@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 #
-# Unit tests on CPU, without mmcv-full / mmdet (they need a compiled build, see rocm/install_rocm.sh): the tests
-# that need them are skipped with the reason printed by pytest -rs.
+# Unit tests on CPU with the full model stack: torch (CPU wheels), the vendored pure-Python mmcv subset
+# (third_party/mmcv) and the vendored mmdetection. Nothing is compiled. No checkpoint and no GPU: tests that need
+# them are skipped with the reason printed by pytest -rs.
 name: tests
 
 on:
@@ -22,7 +23,11 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install numpy==1.23.5 scipy==1.9.3 scikit-image==0.21.0 opencv-python-headless==4.11.0.86 pytest
-          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.23.5 scipy==1.9.3 scikit-image==0.21.0 opencv-python-headless==4.11.0.86 \
+            matplotlib==3.7.5 pillow addict yapf==0.40.1 pyyaml packaging "setuptools<80" \
+            bresenham==0.2.1 pycocotools terminaltables six pytest
+          pip install --no-deps -e third_party/mmcv
+          pip install --no-deps --no-build-isolation -e mmdetection
       - name: Test
         run: python -m pytest tests tools/equivalence/tests

@@ -6,8 +6,9 @@ model with the same checkpoint and gives the same results (checked image by imag
 [docs/VALIDATION.md](docs/VALIDATION.md)). What it adds:
 
 * **Compatibility**: inference on GPUs without mmcv's compiled ops, e.g. AMD GPUs with ROCm, through mmcv's own
-  pure-PyTorch MultiScaleDeformableAttention (`msda_compat.py`); an install script for a current stack (Python 3.11,
-  torch 2.14 ROCm 7.2, mmcv-full 1.7.2 with CPU ops).
+  pure-PyTorch MultiScaleDeformableAttention (`msda_compat.py`); nothing to compile: the pure-Python part of mmcv
+  1.7.2 that inference uses is vendored in `third_party/mmcv` (compiled ops are stand-ins that raise if called);
+  an install script for a current stack (Python 3.11, torch 2.14 ROCm 7.2).
 * **Speed**: a kept-queries mode that post-processes only the queries that can reach the 0.3 threshold
   (`kept_queries.py`; same lines, detector time per image 0.27 s -> 0.056 s, peak device memory ~12 GB -> 0.5 GB),
   and a job engine
@@ -21,19 +22,19 @@ This fork is not affiliated with the authors of LineFormer. If you use it, pleas
 
 ## Quick start
 
-Linux or WSL2 with an AMD GPU (ROCm 7.2 in `/opt/rocm`), `git`, `gcc` with C++20 and [uv](https://docs.astral.sh/uv/):
+Linux or WSL2 with an AMD GPU (ROCm 7.2 in `/opt/rocm`), `git` and [uv](https://docs.astral.sh/uv/); no compiler:
 
 ```bash
-git clone -b v0.2.0 https://github.com/jehelmich/LineFormer.git ~/LineFormer && cd ~/LineFormer
-VENV=$HOME/lineformer bash rocm/install_rocm.sh       # ~15 min (builds mmcv), ~16 GB
+git clone https://github.com/jehelmich/LineFormer.git ~/LineFormer && cd ~/LineFormer
+VENV=$HOME/lineformer bash rocm/install_rocm.sh       # downloads torch; nothing is compiled
 # download iter_3000.pth from the authors' link under "Inference" below
 $HOME/lineformer/bin/lineformer --ckpt iter_3000.pth --out /tmp/lf_demo demo/PMC5959982___3_HTML.jpg
 # expect /tmp/lf_demo/PMC5959982___3_HTML.json with 3 lines of 621 points
 ```
 
-A plain `pip install git+...` is not enough: mmcv-full 1.7.2 has to be built against the installed torch. On NVIDIA
-GPUs or CPU only, the authors' environment (`install.sh`, below) followed by `pip install --no-deps -e .` gives the
-same commands (NVIDIA: not tested by this fork). Many images:
+A plain `pip install git+...` is not enough: torch comes from its own index, and the vendored mmcv subset and
+mmdetection are installed from the checkout. CPU only or NVIDIA: the same script with another torch index
+(`rocm/INSTALL.md`; NVIDIA not tested by this fork). Many images:
 
 ```bash
 lineformer batch --ckpt iter_3000.pth --list images.txt --out out/ --gpu-workers 2   # one job, all cores
@@ -53,7 +54,8 @@ Defaults: `--device auto` (GPU if PyTorch sees one, else CPU), kept-queries mode
 * The upstream LineFormer code and the checkpoint carry no licence from their authors, so all rights are reserved by
   default (see upstream issue [#12](https://github.com/TheJaeLal/LineFormer/issues/12)). Users who need clear rights
   should contact the authors. This fork therefore has no top-level LICENSE file.
-* The vendored `mmdetection/` is Apache-2.0 (OpenMMLab, see its `LICENSE`).
+* The vendored `mmdetection/` and `third_party/mmcv/` (a subset of mmcv 1.7.2; changes in its `NOTICE.md`) are
+  Apache-2.0 (OpenMMLab, see their `LICENSE`).
 * The files added in this fork are Apache-2.0 ([LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt); each carries an
   SPDX header). The modifications to upstream files (`infer.py`, `README.md`, `.gitignore`) are contributed under
   Apache-2.0 as far as they are separable from the upstream code.

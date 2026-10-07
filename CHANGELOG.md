@@ -2,6 +2,26 @@
 <!-- Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer) -->
 # Changelog
 
+## Unreleased
+
+### Compatibility
+- No compiler needed: `third_party/mmcv` vendors the pure-Python part of mmcv 1.7.2 that inference loads (148
+  unchanged modules, ~0.9 MB of source; `NOTICE.md` lists every change). `mmcv.ops` keeps the real
+  MultiScaleDeformableAttention (pure-PyTorch path) and `point_sample`; the compiled ops that the vendored mmdet
+  imports are stand-ins that raise `OpUnavailableError` when called or instantiated. mmcv-full and
+  `rocm/mmcv-1.7.2-cpu-ops.patch` are gone; `rocm/install_rocm.sh` takes `TORCH_INDEX` / `TORCH_PKGS` for CPU or
+  other torch builds. Outputs are bit-identical to the mmcv-full stack on CPU and on the GPU up to the GPU's
+  run-to-run score variation (`docs/VALIDATION.md`).
+- `msda_compat`: `auto` resolves to `pytorch` without a compiled kernel, `compiled` raises (unchanged behaviour,
+  now also with no mmcv extension at all).
+- The engine's manifest reports the `mmcv` distribution version (was `mmcv-full`).
+
+### Tests
+- `tests/test_mmcv_subset.py`: the import closure (infer, engine, mmdet, the model built from the config) loads no
+  compiled mmcv code; every stand-in raises when used; msda_compat without a kernel.
+- CI installs the mmcv subset and the vendored mmdet (nothing to compile), so the model-stack tests run there
+  instead of being skipped.
+
 ## v0.2.0 (2026-10-07)
 
 First release of the fork, against upstream [TheJaeLal/LineFormer](https://github.com/TheJaeLal/LineFormer) commit

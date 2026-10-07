@@ -49,6 +49,25 @@ mode and two GPU workers gives masks bit-identical to the single-process kept ru
 Demo image, expected output: 3 lines of 621 points each (`lineformer --ckpt iter_3000.pth --out out/
 demo/PMC5959982___3_HTML.jpg`), on CPU and GPU.
 
+### Without compiled mmcv (unreleased)
+
+`third_party/mmcv` (the pure-Python subset of mmcv 1.7.2, no `mmcv._ext`) replaces mmcv-full 1.7.2 built with CPU
+ops; every other package version is the same. Bit-identity against the mmcv-full stack, all 72 images unless
+stated:
+
+| run | masks | boxes (coordinates) | scores | lines |
+|---|---|---|---|---|
+| CPU, all queries, 12 images (every 7th + demo), against mmcv-full on CPU | identical 12/12 | identical | identical | identical 12/12 |
+| CPU, kept 0.3, the same 12 images | identical 12/12 | identical | identical | identical 12/12 |
+| GPU, kept 0.3 (`run.py`), against the earlier kept GPU run | identical 72/72 | identical | identical on 53/72, max diff 2.1e-6 | identical 72/72 |
+| engine `lineformer batch`, defaults, 2 GPU workers, against the same run | identical 72/72 | identical | identical on 53/72, max diff 2.5e-6 | identical 72/72 |
+| GPU, kept 0.3, a second run of the subset against its first | identical 72/72 | identical | identical on 51/72, max diff 1.7e-6 | identical 72/72 |
+
+The GPU score differences are run-to-run variation of the GPU path (last row: the same stack against itself), not
+an effect of the subset; on CPU, which is deterministic, everything is bit-identical. A profiler counted 0 calls
+into compiled mmcv code on CPU and GPU, before (mmcv-full) and after; on the GPU the only stand-in that runs is
+`get_compiling_cuda_version`, called by `msda_compat`'s `auto` probe, which then picks `pytorch`.
+
 ## Speed
 
 Per image, 72 images, warm-up excluded, one machine; single runs, so differences of ~1 image/s are noise.

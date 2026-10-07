@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
+# The pure-Python subset of mmcv 1.7.2 that LineFormer inference uses (NOTICE.md). No compiled code: installs
+# without a compiler. The import name stays `mmcv` (the vendored mmdetection imports it); the local version label
+# marks the subset.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mmcv"
+version = "1.7.2+lineformer"
+description = "Pure-Python subset of OpenMMLab mmcv 1.7.2 vendored by the LineFormer fork (no compiled ops)"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.8"
+# as mmcv's requirements/runtime.txt; OpenCV (opencv-python or -headless) is installed separately, as for mmcv
+dependencies = ["addict", "numpy", "packaging", "Pillow", "pyyaml", "yapf"]
+
+[tool.setuptools.packages.find]
+include = ["mmcv*"]

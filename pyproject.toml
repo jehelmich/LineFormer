@@ -11,8 +11,8 @@ description = "LineFormer line chart data extraction (Lal et al., ICDAR 2023), r
 readme = "README.md"
 requires-python = ">=3.8"
 # No licence field: the upstream code has no licence from its authors; see the README section "Licensing".
-# torch, mmcv-full 1.7.x and the vendored mmdetection are installed separately (install.sh, rocm/install_rocm.sh):
-# a plain `pip install` of this package does not give a working environment.
+# torch (from its own index), the vendored mmcv subset (third_party/mmcv) and the vendored mmdetection are installed
+# separately (rocm/install_rocm.sh): a plain `pip install` of this package does not give a working environment.
 dependencies = ["numpy", "opencv-python", "scipy", "scikit-image", "bresenham"]
 
 [project.urls]
