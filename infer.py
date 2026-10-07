@@ -12,6 +12,8 @@ from mmdet.apis import (inference_detector, init_detector)
 from clean_chart import get_clean_input
 import line_utils
 from msda_compat import configure_msda, get_msda_path
+import kept_queries
+from kept_queries import configure as configure_kept_queries
 
 import copy
 
@@ -48,14 +50,24 @@ def get_distinct_colors(n):
     return (hsv_to_bgr(huePartition * value, 1.0, 1.0) for value in range(0, n))
 
 
-def load_model(config, ckpt, device, msda=None):
+def load_model(config, ckpt, device, msda=None, kept_only=None):
     """device: 'cpu', 'cuda' or 'cuda:N' (also AMD GPUs through ROCm builds of PyTorch).
     msda: MultiScaleDeformableAttention path on a GPU, 'auto' | 'compiled' | 'pytorch'
-    (default: env LINEFORMER_MSDA, else 'auto'); see msda_compat.py. Ignored on cpu."""
+    (default: env LINEFORMER_MSDA, else 'auto'); see msda_compat.py. Ignored on cpu.
+    kept_only: opt-in speed-up, see kept_queries.py. None (default) reads env LINEFORMER_KEPT_QUERIES (unset = off),
+    False = off, True = threshold 0.3, a float in (0, 1) = that threshold. When on, only the instances whose class
+    score reaches the threshold are post-processed and returned; instances below it are NOT returned."""
     global model
     configure_msda(device, msda)
     model = init_detector(config, ckpt, device=device)
+    configure_kept_queries(model, kept_only)
     return
+
+
+def get_kept_threshold():
+    """Class-score threshold of the kept-queries mode of the loaded model, or None if off (or no model)."""
+    m = globals().get('model')
+    return None if m is None else kept_queries.get_threshold(m)
 
 
 def do_instance(model, img, score_thr=0.3):

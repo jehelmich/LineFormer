@@ -6,6 +6,8 @@
 Per image <out>/<stem>.json: {"image": path, "lines": [[{"x":..,"y":..}, ...], ...]} from infer.get_dataseries
 (score threshold 0.3, as upstream). --masks also writes <stem>.masks.npz (the kept instance masks, packed bits).
 Existing outputs are skipped unless --force. Image reading runs ahead of the model in threads.
+--kept-only (opt-in, kept_queries.py) post-processes only the queries whose class score reaches --kept-thr: same
+lines, less GPU time and memory.
 """
 import argparse
 import json
@@ -36,6 +38,11 @@ def main(argv=None):
     ap.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
     ap.add_argument('--device', default='cuda:0', help="'cpu', 'cuda' or 'cuda:N' (ROCm GPUs too)")
     ap.add_argument('--msda', choices=('auto', 'compiled', 'pytorch'), default=None)
+    ap.add_argument('--kept-only', action='store_true',
+                    help='speed-up: post-process only the queries whose class score reaches --kept-thr; the lines '
+                         'are the same, instances below the threshold are not returned (kept_queries.py). '
+                         'Without the flag: env LINEFORMER_KEPT_QUERIES, else off')
+    ap.add_argument('--kept-thr', type=float, default=0.3, help='threshold of --kept-only (default 0.3)')
     ap.add_argument('--out', required=True, type=Path)
     ap.add_argument('--masks', action='store_true', help='also save the kept instance masks')
     ap.add_argument('--force', action='store_true')
@@ -56,7 +63,8 @@ def main(argv=None):
         return 0
 
     import infer  # heavy imports after argument checks
-    infer.load_model(str(a.config), str(a.ckpt), a.device, msda=a.msda)
+    infer.load_model(str(a.config), str(a.ckpt), a.device, msda=a.msda,
+                     kept_only=a.kept_thr if a.kept_only else None)
 
     t0 = time.time()
     ahead = 8
