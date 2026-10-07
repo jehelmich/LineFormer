@@ -15,4 +15,5 @@ dependencies = ["numpy", "opencv-python", "scipy", "scikit-image", "bresenham"]
 lineformer = "lineformer_cli:main"
 
 [tool.setuptools]
-py-modules = ["infer", "line_utils", "clean_chart", "msda_compat", "kept_queries", "lineformer_cli"]
+py-modules = ["infer", "line_utils", "clean_chart", "msda_compat", "kept_queries", "lineformer_cli", "scale_compat",
+              "tiling"]
