@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Run LineFormer on a large image as overlapping native-resolution crops and merge the instances.
 
 Idea: instead of shrinking a large image to the network's training size, cut it into crops of ``size`` x ``size``

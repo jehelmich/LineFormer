@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """`lineformer serve`: one long-lived owner of the GPU that takes LineFormer jobs over HTTP (localhost).
 
     lineformer serve --ckpt iter_3000.pth --port 8775 --gpu-workers 2 --kept-only

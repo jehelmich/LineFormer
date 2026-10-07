@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Run a LineFormer checkout over a list of images and save everything needed to compare two runs.
 
 Per image (see common.py for the file layout):

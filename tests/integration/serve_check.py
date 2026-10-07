@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Load check of a running `lineformer serve`: concurrent jobs + one cancelled job, then consistency checks.
 
     python tests/integration/serve_check.py --url http://127.0.0.1:8775 --images list.txt --out-base /tmp/sc \

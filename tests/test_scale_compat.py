@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Unit tests for scale_compat.py: the overridden test pipelines and what they feed the network (no checkpoint).
 
 pytest tests -q      or, without pytest:  python tests/test_scale_compat.py

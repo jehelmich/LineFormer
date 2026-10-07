@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
+# Contains code adapted from OpenMMLab mmdetection (Apache-2.0, Copyright OpenMMLab).
 """Production job engine: images in, LineFormer outputs out, with the GPU work spread over worker processes.
 
     from lineformer_engine import Engine, ModelOptions

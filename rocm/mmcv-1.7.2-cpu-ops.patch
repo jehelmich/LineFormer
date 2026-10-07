@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
+# Contains code adapted from OpenMMLab mmcv (Apache-2.0, Copyright OpenMMLab).
 diff --git a/setup.py b/setup.py
 index a0b6a42..e78923a 100644
 --- a/setup.py

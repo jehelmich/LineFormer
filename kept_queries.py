@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
+# Contains code adapted from OpenMMLab mmdetection (Apache-2.0, Copyright OpenMMLab).
 """Opt-in: post-process only the queries that can reach the score threshold (instance results only).
 
 Mask2Former returns one mask per query (100). mmdet 2.28's test path upsamples all of them to the input and then to

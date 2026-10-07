@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Unit tests for tiling.py on synthetic masks (no model, no torch).
 
 pytest tests -q      or, without pytest:  python tests/test_tiling.py

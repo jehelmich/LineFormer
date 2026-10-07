@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 cff-version: 1.2.0
 message: "If you use LineFormer, please cite the ICDAR 2023 paper below."
 title: "LineFormer"

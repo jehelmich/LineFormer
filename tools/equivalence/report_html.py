@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Static inspection site for one or more compare.py results.
 
 python report_html.py --compare AvsB.json --compare AvsC.json [...] --out site/

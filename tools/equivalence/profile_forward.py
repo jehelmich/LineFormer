@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Where does LineFormer spend its time, and does the GPU really do the work? One device per run.
 
 (Named profile_forward.py, not profile.py: a profile.py next to the script would shadow the standard library module

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Convert an engine output directory (`lineformer batch` / `serve` with instances and masks) into a run directory of
 tools/equivalence, so that compare.py can judge the engine against reference runs.
 

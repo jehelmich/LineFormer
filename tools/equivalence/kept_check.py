@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """In-process check of the kept-queries mode (kept_queries.py) against the unpatched mmdet path, image by image.
 
 One model, one process: per image inference_detector runs unpatched (R, all instances), then with the mode on (K),

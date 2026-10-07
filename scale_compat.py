@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Choose the test-time input size of a LineFormer model.
 
 The released config resizes every image to fit ``image_size = (512, 512)`` (``Resize`` with ``keep_ratio=True``

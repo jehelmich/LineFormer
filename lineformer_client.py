@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Client of `lineformer serve` - standard library only (no torch, no numpy), Python >= 3.8.
 
 Copy this one file into another project (or put the LineFormer checkout on sys.path) and:

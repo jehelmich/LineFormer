@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Compare two run directories written by run.py, image by image, against fixed acceptance criteria.
 
 Acceptance ("behaviour unchanged", fixed before measuring), on every image:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Unit tests for compare.py on synthetic run directories (no model needed).
 
 pytest tools/equivalence/tests -q      or, without pytest:  python tools/equivalence/tests/test_compare.py

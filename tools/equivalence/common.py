@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Shared I/O for the equivalence harness (no torch / mmcv imports here).
 
 One run directory holds, per image id:

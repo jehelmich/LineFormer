@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Choose the MultiScaleDeformableAttention (MSDA) code path used on a GPU.
 
 mmcv 1.7.x runs MSDA through its compiled extension (``MultiScaleDeformableAttnFunction``)

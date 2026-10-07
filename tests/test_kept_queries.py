@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Unit tests for kept_queries.py on synthetic tensors (no checkpoint needed; CPU).
 
 pytest tests -q      or, without pytest:  python tests/test_kept_queries.py

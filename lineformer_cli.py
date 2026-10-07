@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Command line inference: chart images -> line data series (JSON), on CPU or a GPU (CUDA or ROCm).
 
 Three forms:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Unit tests of the engine pieces that need no GPU and no checkpoint: ids, skip-if-done, scheduler, job states,
 manifest, option parsing, shared-memory transfer, the tiled split path, and the HTTP API + client against a stub
 engine.

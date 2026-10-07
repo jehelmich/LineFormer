@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 # Environment for inference on AMD GPUs (ROCm), tested on ROCm 7.2.0 / RX 7900 XTX (gfx1100) under WSL2 Ubuntu 24.04.
 # mmcv-full is built with CPU ops only; on the GPU, MultiScaleDeformableAttention runs mmcv's pure-PyTorch
 # implementation (see msda_compat.py). Run from the repository root. Needs uv, git, gcc (C++20) and ROCm in /opt/rocm.

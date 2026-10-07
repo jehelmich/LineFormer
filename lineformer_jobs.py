@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """Jobs of the LineFormer engine: image ids, output files, skip-if-done, the scheduler and the job manifest.
 
 No torch / mmcv / numpy imports: the engine's main process, the HTTP server and the unit tests use this module.
