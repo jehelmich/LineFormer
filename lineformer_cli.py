@@ -2,15 +2,23 @@
 
 Three forms:
 
-    lineformer --ckpt iter_3000.pth --device cuda:0 --out out/ chart1.png chart2.png      # single process
-    lineformer batch --ckpt iter_3000.pth --list images.txt --out out/ --kept-only --gpu-workers 2
-    lineformer serve --ckpt iter_3000.pth --port 8775 --kept-only --gpu-workers 2         # job server
+    lineformer --ckpt iter_3000.pth --out out/ chart1.png chart2.png              # single process
+    lineformer batch --ckpt iter_3000.pth --list images.txt --out out/ --gpu-workers 2
+    lineformer serve --ckpt iter_3000.pth --port 8775 --gpu-workers 2             # job server
 
-Single process (the original form, unchanged): per image <out>/<stem>.json: {"image": path, "lines": [[{"x":..,
-"y":..}, ...], ...]} from infer.get_dataseries (score threshold 0.3, as upstream). --masks also writes
-<stem>.masks.npz (the kept instance masks, packed bits per mask: masks, shape). Existing outputs are skipped unless
---force. Image reading runs ahead of the model in threads. --kept-only (opt-in, kept_queries.py) post-processes
-only the queries whose class score reaches --kept-thr: same lines, less GPU time and memory.
+Defaults of all three forms (since 0.2.0):
+  * --device auto: 'cuda:0' if PyTorch sees a GPU (CUDA or ROCm), else 'cpu'; the choice is printed.
+  * kept-queries mode ON at 0.3 (kept_queries.py): only the queries whose class score reaches --kept-thr are
+    post-processed and returned. The lines are the same as with all queries (a line needs a final score > 0.3,
+    and final score <= class score), at ~4x less GPU time and ~1 GB instead of ~12 GB device memory. The
+    instances written with --instances / --masks are then only the kept queries. --all-queries switches it off
+    (all 100 queries, as upstream). The environment variable LINEFORMER_KEPT_QUERIES is not read here.
+  * batch / serve: 1 GPU worker (2 is the measured best), min(8, max(2, CPUs // 3)) pre-processing workers.
+
+Single process: per image <out>/<stem>.json: {"image": path, "lines": [[{"x":.., "y":..}, ...], ...]} from
+infer.get_dataseries (score threshold 0.3, as upstream). --masks also writes <stem>.masks.npz (the masks of the
+instances behind the lines, packed bits per mask: masks, shape). Existing outputs are skipped unless --force.
+Image reading runs ahead of the model in threads.
 
 `lineformer batch` runs one job on the engine (lineformer_engine.py: pre-processing workers -> N GPU workers ->
 post-processing workers) and `lineformer serve` keeps the engine up and takes jobs over HTTP (lineformer_serve.py;
@@ -18,9 +26,14 @@ client: lineformer_client.py). Their outputs, ids and skip rules are in lineform
 lines and provenance), optional <id>.instances.npz / <id>.masks.npz, and the manifest <out>/job.json.
 `lineformer batch --help` lists the options. Exit codes of batch: 0 every image done or skipped, 1 some images
 failed (or the job was cancelled), 2 the engine failed (e.g. out of GPU memory), 130 interrupted (rerun to resume).
+
+--input-size native and --tile are EXPERIMENTAL: in an in-sample test on dense chart grids, native-resolution
+input made the model segment grid lines as data lines (precision 0.97 -> ~0.2); results are best near the training
+scale (~512 px per chart, the default).
 """
 import argparse
 import json
+import os
 import signal
 import sys
 import threading
@@ -34,6 +47,15 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG = HERE / 'lineformer_swin_t_config.py'
 SUBCOMMANDS = ('batch', 'serve')
+DEFAULT_KEPT_THR = 0.3
+EXPERIMENTAL = ('EXPERIMENTAL: in an in-sample test on dense chart grids, native-resolution input made the model '
+                'segment grid lines as data lines (precision 0.97 -> ~0.2); best results near the training scale '
+                '(~512 px per chart)')
+
+
+def default_pre_workers():
+    """min(8, max(2, CPUs // 3)): enough readers to keep two GPU workers fed, without starving them of CPU."""
+    return min(8, max(2, (os.cpu_count() or 1) // 3))
 
 
 def _read(path):
@@ -43,11 +65,47 @@ def _read(path):
     return img
 
 
+def _log(msg):
+    print('[lineformer] %s' % msg, file=sys.stderr, flush=True)
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv and argv[0] in SUBCOMMANDS:
         return {'batch': main_batch, 'serve': main_serve}[argv[0]](argv[1:])
     return main_single(argv)
+
+
+def _device_arg(g):
+    g.add_argument('--device', default='auto',
+                   help="'auto' (default: cuda:0 if PyTorch sees a GPU, else cpu), 'cpu', 'cuda' or 'cuda:N' "
+                        "(ROCm GPUs too)")
+
+
+def _kept_args(g):
+    g.add_argument('--all-queries', action='store_true',
+                   help='switch the kept-queries mode off: post-process and return all 100 queries, as upstream '
+                        '(same lines; ~4x more GPU time and up to ~12 GB device memory per process). Needed only '
+                        'for instances whose class score is below --kept-thr')
+    g.add_argument('--kept-only', action='store_true',
+                   help='kept-queries mode (kept_queries.py); ON by default, the flag is accepted for older '
+                        'command lines')
+    g.add_argument('--kept-thr', type=float, default=None,
+                   help='class-score threshold of the kept-queries mode (default %.1f; e.g. 0.1 keeps lower-scoring '
+                        'instances in .instances.npz / .masks.npz; lines still use score > 0.3)' % DEFAULT_KEPT_THR)
+
+
+def _kept_thr(a, ap):
+    """-> the kept-queries threshold, or None (mode off) with --all-queries."""
+    if a.all_queries:
+        if a.kept_only or a.kept_thr is not None:
+            ap.error('--all-queries switches the kept-queries mode off; drop --kept-only / --kept-thr')
+        return None
+    return a.kept_thr if a.kept_thr is not None else DEFAULT_KEPT_THR
+
+
+def _kept_text(kept):
+    return 'off (all queries)' if kept is None else 'on, class-score threshold %g' % kept
 
 
 # ------------------------------------------------------------------ single process (original form)
@@ -60,17 +118,14 @@ def main_single(argv=None):
     ap.add_argument('--list', type=Path, help='text file with one image path per line')
     ap.add_argument('--ckpt', required=True, type=Path)
     ap.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
-    ap.add_argument('--device', default='cuda:0', help="'cpu', 'cuda' or 'cuda:N' (ROCm GPUs too)")
+    _device_arg(ap)
     ap.add_argument('--msda', choices=('auto', 'compiled', 'pytorch'), default=None)
-    ap.add_argument('--kept-only', action='store_true',
-                    help='speed-up: post-process only the queries whose class score reaches --kept-thr; the lines '
-                         'are the same, instances below the threshold are not returned (kept_queries.py). '
-                         'Without the flag: env LINEFORMER_KEPT_QUERIES, else off')
-    ap.add_argument('--kept-thr', type=float, default=0.3, help='threshold of --kept-only (default 0.3)')
+    _kept_args(ap)
     ap.add_argument('--out', required=True, type=Path)
-    ap.add_argument('--masks', action='store_true', help='also save the kept instance masks')
+    ap.add_argument('--masks', action='store_true', help='also save the masks of the instances behind the lines')
     ap.add_argument('--force', action='store_true')
     a = ap.parse_args(argv)
+    kept = _kept_thr(a, ap)
 
     paths = list(a.images)
     if a.list:
@@ -82,13 +137,18 @@ def main_single(argv=None):
     if len(set(stems)) != len(stems):
         raise SystemExit('two images share a file name stem; outputs would collide')
     todo = [p for p in paths if a.force or not (a.out / f'{p.stem}.json').exists()]
-    print(f'{len(todo)} of {len(paths)} images to do on {a.device}', flush=True)
     if not todo:
+        print(f'0 of {len(paths)} images to do', flush=True)
         return 0
 
+    device = a.device
+    if device == 'auto':
+        import torch
+        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    print(f'{len(todo)} of {len(paths)} images to do on {device}', flush=True)
+    _log('device %s%s, kept-queries mode %s' % (device, ' (auto)' if a.device == 'auto' else '', _kept_text(kept)))
     import infer  # heavy imports after argument checks
-    infer.load_model(str(a.config), str(a.ckpt), a.device, msda=a.msda,
-                     kept_only=a.kept_thr if a.kept_only else None)
+    infer.load_model(str(a.config), str(a.ckpt), device, msda=a.msda, kept_only=False if kept is None else kept)
 
     t0 = time.time()
     ahead = 8
@@ -119,29 +179,26 @@ def _engine_args(ap):
     g = ap.add_argument_group('model (one set per engine)')
     g.add_argument('--ckpt', required=True, type=Path)
     g.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
-    g.add_argument('--device', default='cuda:0', help="'cpu', 'cuda' or 'cuda:N' (ROCm GPUs too)")
+    _device_arg(g)
     g.add_argument('--msda', choices=('auto', 'compiled', 'pytorch'), default=None,
                    help='MSDA path on a GPU (msda_compat.py; default env LINEFORMER_MSDA, else auto)')
-    g.add_argument('--kept-only', action='store_true',
-                   help='kept-queries mode (kept_queries.py): only queries whose class score reaches --kept-thr are '
-                        'post-processed and returned (same lines, ~4x less GPU time, ~1 GB per worker). '
-                        'Off by default; the environment variable is not read')
-    g.add_argument('--kept-thr', type=float, default=None,
-                   help='threshold of --kept-only (default 0.3; e.g. 0.1 keeps low-score instances in the '
-                        '.instances.npz / .masks.npz)')
+    _kept_args(g)
     g.add_argument('--input-size', default='config',
-                   help="network input: 'config' (fit 512, default), N (fit N x N) or 'native' (scale_compat.py)")
+                   help="network input: 'config' (fit 512, default), N (fit N x N) or 'native' (scale_compat.py). "
+                        "'native' is " + EXPERIMENTAL)
     g.add_argument('--tile', type=int, default=None, metavar='CROP',
                    help='run native-resolution crops of CROP x CROP px and merge them (tiling.py); implies '
-                        '--input-size native')
+                        '--input-size native. ' + EXPERIMENTAL)
     g.add_argument('--tile-overlap', type=int, default=128, help='overlap of neighbouring crops in px (default 128)')
     g = ap.add_argument_group('workers')
     g.add_argument('--gpu-workers', type=int, default=1, help='model processes sharing the device (default 1; 2 '
-                   'is the measured best with --kept-only)')
+                   'is the measured best)')
     g.add_argument('--gpu-mem-budget', default='0.85',
                    help='device memory all GPU workers together may use: a fraction (default 0.85) or a size such '
                         'as 4G; each worker gets budget / N. Out of memory ends the run')
-    g.add_argument('--pre-workers', type=int, default=4)
+    g.add_argument('--pre-workers', type=int, default=None,
+                   help='image reading + resizing processes (default min(8, max(2, CPUs // 3)) = %d here)'
+                        % default_pre_workers())
     g.add_argument('--post-workers', type=int, default=4)
     g.add_argument('--pre-threads', type=int, default=1)
     g.add_argument('--post-threads', type=int, default=1)
@@ -152,9 +209,7 @@ def _engine_args(ap):
 
 def _make_engine(a, ap):
     from lineformer_engine import Engine, ModelOptions
-    if a.kept_thr is not None and not a.kept_only:
-        ap.error('--kept-thr needs --kept-only')
-    kept = (a.kept_thr if a.kept_thr is not None else 0.3) if a.kept_only else None
+    kept = _kept_thr(a, ap)
     size = a.input_size
     if a.tile is not None and size == 'config':
         size = 'native'
@@ -164,7 +219,12 @@ def _make_engine(a, ap):
         mo = mo.resolved()
     except ValueError as e:
         ap.error(str(e))
-    return Engine(mo, gpu_workers=a.gpu_workers, gpu_mem_budget=a.gpu_mem_budget, pre_workers=a.pre_workers,
+    pre = a.pre_workers if a.pre_workers is not None else default_pre_workers()
+    _log('device %s%s, kept-queries mode %s, %d GPU worker(s), %d pre-processing workers' % (
+        mo.device, ' (auto)' if a.device == 'auto' else '', _kept_text(kept), a.gpu_workers, pre))
+    if size == 'native':
+        _log('WARNING: --input-size native / --tile is ' + EXPERIMENTAL)
+    return Engine(mo, gpu_workers=a.gpu_workers, gpu_mem_budget=a.gpu_mem_budget, pre_workers=pre,
                   post_workers=a.post_workers, pre_threads=a.pre_threads, post_threads=a.post_threads,
                   gpu_threads=a.gpu_threads, max_inflight=a.max_inflight)
 
@@ -179,7 +239,9 @@ def main_batch(argv):
     ap.add_argument('--out', required=True, type=Path)
     ap.add_argument('--ids', choices=jobs.ID_SCHEMES, default='stem',
                     help='output id of an image without an explicit id: file stem (default) or <parent>__<stem>')
-    ap.add_argument('--instances', action='store_true', help='also write <id>.instances.npz (boxes with scores)')
+    ap.add_argument('--instances', action='store_true',
+                    help='also write <id>.instances.npz (boxes with scores; with the default kept-queries mode only '
+                         'the kept queries, --all-queries for all 100)')
     ap.add_argument('--masks', action='store_true', help='also write <id>.masks.npz (masks of the same instances)')
     ap.add_argument('--force', action='store_true', help='recompute images that are done')
     ap.add_argument('--progress-s', type=float, default=10.0, help='progress line interval (s)')

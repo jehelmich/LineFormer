@@ -18,12 +18,14 @@ The main process holds no model and never initialises the GPU runtime; it feeds 
 flight), collects results and writes the manifests (<out>/job.json).
 
 Model options (ModelOptions; one set per engine - a different input size or threshold needs another engine):
-  device, msda       as infer.load_model (msda_compat.py)
+  device, msda       as infer.load_model (msda_compat.py); device 'auto' = 'cuda:0' if PyTorch sees a GPU, else
+                     'cpu' (resolve_device, probed in a subprocess)
   kept_thr           kept-queries mode (kept_queries.py), None = OFF (the default; the environment variable is NOT
                      read here). A threshold in (0, 1), e.g. 0.3, or 0.1 to keep low-score instances in the
                      .instances.npz: only queries whose class score reaches it are post-processed and returned.
-  input_size         'config' (the config's 512 fit, default), N (fit N x N) or 'native' (scale_compat.py)
-  tile, tile_overlap native crops of tile x tile px with that overlap, merged (tiling.py); needs input_size
+  input_size         'config' (the config's 512 fit, default), N (fit N x N) or 'native' (scale_compat.py;
+                     'native' is EXPERIMENTAL, see docs/VALIDATION.md "Input scale")
+  tile, tile_overlap EXPERIMENTAL: native crops of tile x tile px with that overlap, merged (tiling.py); needs input_size
                      'native' (set automatically); per-crop instances below the score threshold of the merge
                      (kept_thr if set, else 0.3) are dropped before the merge.
 Every GPU worker builds its model with scale_compat.build_model and calls kept_queries.configure(model, thr)
@@ -65,7 +67,7 @@ THREAD_ENV = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUM
 LINE_THR = 0.3  # infer.get_dataseries -> do_instance(score_thr=0.3); parse_result keeps score > 0.3
 
 
-# ================================================================== pieces shared with tools/throughput/batch_infer.py
+# ================================================================== per-image pieces (also used by the unit tests)
 
 def worker_signals():
     """Worker processes ignore SIGINT: Ctrl-C reaches the whole process group, and the main process decides
@@ -122,8 +124,8 @@ def forward(model, datas, check_no_pad=True):
     """Second half of mmdet.apis.inference_detector (verbatim), for a list of pre-processed images that must all
     have one tensor shape (so mmcv's collate pads nothing). Returns the list of per-image results.
 
-    check_no_pad: raise if an image's img_shape differs from the batch input (any padding). batch_infer.py's
-    batches need it; a single image whose own pipeline pads (scale_compat 'native', Pad to 32) passes False."""
+    check_no_pad: raise if an image's img_shape differs from the batch input (any padding); a batch of several
+    images needs it. A single image whose own pipeline pads (scale_compat 'native', Pad to 32) passes False."""
     import torch
     from mmcv.parallel import collate, scatter
     shapes = sorted(set(data_shape(d) for d in datas))
@@ -336,6 +338,21 @@ def parse_mem_budget(v):
     return ('frac', v)
 
 
+def resolve_device(device):
+    """'auto' -> 'cuda:0' if PyTorch sees a GPU (CUDA or ROCm), else 'cpu'; any other value is returned unchanged.
+    The probe runs in a short-lived subprocess, so the calling process never initialises the GPU runtime."""
+    if device != 'auto':
+        return device
+    import subprocess
+    r = subprocess.run([sys.executable, '-c', 'import torch; print(int(torch.cuda.is_available()))'],
+                       capture_output=True, text=True, timeout=600)
+    out = r.stdout.strip().splitlines()
+    if r.returncode != 0 or not out or out[-1] not in ('0', '1'):
+        raise RuntimeError('device auto: probing torch.cuda.is_available() failed:\n%s'
+                           % (r.stderr or r.stdout)[-2000:])
+    return 'cuda:0' if out[-1] == '1' else 'cpu'
+
+
 @dataclass
 class ModelOptions:
     ckpt: str
@@ -357,6 +374,7 @@ class ModelOptions:
         for p in (o.ckpt, o.config):
             if not os.path.isfile(p):
                 raise ValueError('file not found: %s' % p)
+        o.device = resolve_device(o.device)
         if o.msda not in (None, 'auto', 'compiled', 'pytorch'):
             raise ValueError('msda must be auto, compiled or pytorch, got %r' % (o.msda,))
         if o.kept_thr is not None:
