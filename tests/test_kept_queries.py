@@ -6,8 +6,17 @@ import os
 import sys
 from pathlib import Path
 
-import torch
-import torch.nn.functional as F
+import importlib.util
+import unittest
+
+# These tests need the model stack; without it the module is skipped with the reason (pytest -rs prints it).
+# find_spec only: importing mmcv here would probe the GPU before the CPU-only patch below.
+_MISSING = [m for m in ('torch', 'mmcv', 'mmdet') if importlib.util.find_spec(m) is None]
+if _MISSING:
+    raise unittest.SkipTest('needs torch, mmcv-full and mmdet (rocm/install_rocm.sh); missing: %s'
+                            % ', '.join(_MISSING))
+import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 torch.cuda.is_available = lambda: False  # CPU only; under WSL+ROCm the probe would start the HSA runtime

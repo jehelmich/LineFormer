@@ -6,7 +6,16 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import torch
+import importlib.util
+import unittest
+
+# These tests need the model stack; without it the module is skipped with the reason (pytest -rs prints it).
+# find_spec only: importing mmcv here would probe the GPU before the CPU-only patch below.
+_MISSING = [m for m in ('torch', 'mmcv', 'mmdet') if importlib.util.find_spec(m) is None]
+if _MISSING:
+    raise unittest.SkipTest('needs torch, mmcv-full and mmdet (rocm/install_rocm.sh); missing: %s'
+                            % ', '.join(_MISSING))
+import torch  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
