@@ -34,6 +34,9 @@ dataseries (exact and line-order-insensitive) against pass 0. Throughput = R * n
 timed task to the last timed result). CPU: /proc/stat over the timed window (whole WSL VM) and /proc/<pid>/stat
 per role; GPU memory per GPU process (max_memory_allocated / reserved over the whole run).
 
+--kept-only THR loads every model with infer.load_model(kept_only=THR) (kept_queries.py: only the queries whose
+class score reaches THR are post-processed, on the device, and returned); without it the mode is explicitly off.
+
 Threads: every child gets OMP/MKL/OPENBLAS/NUMEXPR_NUM_THREADS, torch.set_num_threads and cv2.setNumThreads set
 to its role's --*-threads (defaults 1 for pre/post, 2 for GPU processes).
 """
@@ -299,8 +302,13 @@ def _load_model(args, threads):
     _apply_threads(threads)
     import infer
     sig_kw = {"msda": args["msda"]} if args["msda"] else {}
+    # explicit on/off (False, not None): a worker never picks the mode up from the environment by accident
+    sig_kw["kept_only"] = args.get("kept_only") or False
     infer.load_model(args["config"], args["ckpt"], args["device"], **sig_kw)
     model = infer.model
+    if infer.get_kept_threshold() != (args.get("kept_only") or None):
+        raise RuntimeError("kept-queries threshold %r, asked for %r" % (infer.get_kept_threshold(),
+                                                                         args.get("kept_only")))
     devs = sorted(set(str(p.device) for p in model.parameters()))
     if str(args["device"]).startswith("cuda") and not any(d.startswith("cuda") for d in devs):
         raise RuntimeError("asked for %s, parameters on %s" % (args["device"], devs))
@@ -566,8 +574,8 @@ def _progress(msg, recs):
 def run_pipeline(args, items, meta):
     import multiprocessing as mp
     ctx = mp.get_context("spawn")
-    a = {k: getattr(args, k) for k in ("repo", "config", "ckpt", "device", "msda", "batch", "transfer",
-                                       "gpu_workers", "gpu_mem_budget")}
+    a = {k: getattr(args, k) for k in ("repo", "config", "ckpt", "device", "msda", "kept_only", "batch",
+                                       "transfer", "gpu_workers", "gpu_mem_budget")}
     task_q = ctx.Queue()
     pre_q = ctx.Queue(maxsize=args.pre_queue or max(4, 2 * args.gpu_workers * args.batch))
     post_q = ctx.Queue(maxsize=args.post_queue or max(4, 2 * args.post_workers))
@@ -715,6 +723,10 @@ def main(argv=None):
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--msda", choices=["auto", "compiled", "pytorch"], default=None)
+    ap.add_argument("--kept-only", type=float, default=None, metavar="THR",
+                    help="kept-queries mode (kept_queries.py): only queries with class score >= THR are "
+                         "post-processed and returned; the .npz of pass 0 then lacks the instances below THR. "
+                         "Default: off (explicitly, whatever LINEFORMER_KEPT_QUERIES says)")
     ap.add_argument("--images", required=True)
     ap.add_argument("--out", required=True, help="run directory (harness format) of pass 0")
     ap.add_argument("--tag", default=None)
@@ -755,7 +767,7 @@ def main(argv=None):
             "runner": "tools/throughput/batch_infer.py",
             "config_throughput": {k: getattr(args, k) for k in (
                 "mode", "gpu_workers", "batch", "pre_workers", "post_workers", "pre_threads", "post_threads",
-                "gpu_threads", "transfer", "repeat")}}
+                "gpu_threads", "transfer", "repeat", "kept_only", "gpu_mem_budget")}}
     try:
         meta["repo_git"] = subprocess.run(["git", "-C", args.repo, "rev-parse", "HEAD"], capture_output=True,
                                           text=True).stdout.strip()

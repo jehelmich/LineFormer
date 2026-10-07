@@ -177,6 +177,41 @@ def test_different_input_pixels_fail():
         assert not img["pass"] and "pixels" in " ".join(img["reasons"])
 
 
+def test_kept_only_candidate_passes_and_is_reported_as_subset():
+    """A kept-queries run lacks the instances below 0.3: no failure, and the subset is reported as bit-identical."""
+    with _Tmp() as t:
+        _write_run(t / "A", "A", _base())
+        b = _base()
+        b["img1"] = (b["img1"][0][:2], b["img1"][1][:2])
+        _write_run(t / "B", "B", b)
+        res = compare.compare_runs(t / "A", t / "B")
+        assert res["summary"]["verdict"] == "PASS", res["summary"]["failures"]
+        sub = res["images"][0]["cand_subset_of_ref"]
+        assert sub["is_bit_identical_subset"] and sub["n_kept"] == 2 and sub["order_preserved"]
+        assert sub["ref_above_thr_missing"] == [] and abs(sub["max_ref_score_dropped"] - 0.1) < 1e-6
+        s = res["summary"]["cand_subset_of_ref"]
+        assert s["n_images_bit_identical_subset"] == 1 and s["n_ref_above_thr_missing"] == 0
+        # a changed mask is not part of the bit-identical subset (and a full run is a subset of itself)
+        b["img1"][1][1] = _line_mask(30, slope=0.21)
+        _write_run(t / "C", "C", b)
+        sub = compare.compare_runs(t / "A", t / "C")["images"][0]["cand_subset_of_ref"]
+        assert not sub["is_bit_identical_subset"] and sub["n_kept_mask_identical"] == 1
+        assert sub["ref_above_thr_missing"] == [1]
+        _write_run(t / "D", "D", _base())
+        assert compare.compare_runs(t / "A", t / "D")["images"][0]["cand_subset_of_ref"]["is_bit_identical_subset"]
+
+
+def test_kept_only_candidate_missing_an_instance_above_threshold_fails():
+    with _Tmp() as t:
+        _write_run(t / "A", "A", _base())
+        b = _base()
+        b["img1"] = ([0.9], [b["img1"][1][0]])
+        _write_run(t / "B", "B", b)
+        res = compare.compare_runs(t / "A", t / "B")
+        assert res["summary"]["verdict"] == "FAIL"
+        assert res["images"][0]["cand_subset_of_ref"]["ref_above_thr_missing"] == [1]
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

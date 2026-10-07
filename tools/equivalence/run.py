@@ -150,6 +150,11 @@ def load(args, meta):
         if args.msda not in (None, "auto"):
             raise SystemExit("--msda %s asked for, but infer.load_model%s has no msda option" % (args.msda, sig))
         meta["msda_handling"] = "not supported by repo (load_model%s)" % sig
+    kept = getattr(args, "kept_only", None)
+    if kept is not None:
+        if "kept_only" not in sig.parameters:
+            raise SystemExit("--kept-only asked for, but infer.load_model%s has no kept_only option" % (sig,))
+        kw["kept_only"] = kept
     _sync(args.device)
     t = time.perf_counter()
     ret = infer.load_model(config, ckpt, args.device, **kw)
@@ -173,6 +178,8 @@ def load(args, meta):
                 except Exception as e:
                     rep[name + "()"] = "error: %r" % e
     meta["infer_msda_report"] = rep
+    # kept-queries mode (kept_queries.py): None = off or not supported by the checkout
+    meta["kept_queries_threshold"] = infer.get_kept_threshold() if hasattr(infer, "get_kept_threshold") else None
     meta["torch_deterministic_algorithms"] = bool(getattr(torch, "are_deterministic_algorithms_enabled", lambda: None)())
     want_gpu = str(args.device).startswith("cuda")
     if want_gpu and not any(d.startswith("cuda") for d in devs):
@@ -214,6 +221,9 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--tag", default=None)
     ap.add_argument("--msda", choices=["auto", "compiled", "pytorch"], default=None)
+    ap.add_argument("--kept-only", type=float, default=None, metavar="THR",
+                    help="infer.load_model(kept_only=THR): only queries with class score >= THR are post-processed "
+                         "and saved (the .npz then lacks the instances below THR). Default: the repo default")
     ap.add_argument("--limit", type=int, default=None, help="only the first N images of the list")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--no-instrument", action="store_true")
@@ -237,6 +247,7 @@ def main(argv=None):
         "ckpt_sha256": common.sha256_file(args.ckpt),
         "device_requested": args.device,
         "msda_requested": args.msda,
+        "kept_only_requested": args.kept_only,
         "images_list": images_arg,
         "image_ids": [i for i, _ in items],
         "started": time.strftime("%Y-%m-%d %H:%M:%S"),

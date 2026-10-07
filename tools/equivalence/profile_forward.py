@@ -72,6 +72,8 @@ def main(argv=None):
     ap.add_argument("--n", type=int, default=5, help="images to time (after warm-up)")
     ap.add_argument("--warmup", type=int, default=1)
     ap.add_argument("--msda", choices=["auto", "compiled", "pytorch"], default=None)
+    ap.add_argument("--kept-only", type=float, default=None, metavar="THR",
+                    help="infer.load_model(kept_only=THR), see kept_queries.py")
     ap.add_argument("--out", required=True, help="json file")
     ap.add_argument("--trace", default=None, help="optional chrome trace file of the profiler pass")
     ap.add_argument("--no-profiler", action="store_true", help="skip pass 3")
@@ -88,7 +90,8 @@ def main(argv=None):
     out_path = Path(args.out).resolve()
     trace_path = str(Path(args.trace).resolve()) if args.trace else None
     images_spec = str(Path(args.images).resolve())
-    meta = {"device_requested": args.device, "msda_requested": args.msda, "images_list": images_spec,
+    meta = {"device_requested": args.device, "msda_requested": args.msda, "kept_only_requested": args.kept_only,
+            "images_list": images_spec,
             "versions": runmod._versions()}
     infer, model = runmod.load(args, meta)
     gpu = str(args.device).startswith("cuda")

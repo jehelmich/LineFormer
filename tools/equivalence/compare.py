@@ -10,6 +10,10 @@ Instance matching: instances with score >= 0.3 of each run; IoU matrix from spar
 maximising total IoU (scipy linear_sum_assignment). An assigned pair with IoU 0 counts as unmatched.
 The same matching over ALL instances (no threshold) is reported as information, not judged.
 Near threshold: instances whose score is within 0.02 of 0.3 in either run (they explain count changes).
+Kept-queries mode (kept_queries.py) returns only the instances whose class score reaches 0.3, so a candidate in
+that mode has fewer instances in total; the verdict only looks at instances >= 0.3 and is not affected. As
+information, "cand_subset_of_ref" pairs every candidate instance with a reference instance of identical mask
+bytes and counts identical boxes and scores (per image and in the summary).
 
 Dataseries matching: each line is a list of {x, y}. For a pair of lines (ref i, cand j) the cost is the mean
 |y_ref - y_cand| over the x values both lines have (a line with several points at one x uses, per point, the
@@ -87,6 +91,42 @@ def match_instances(ma, sa, mb, sb):
     ua = sorted(set(range(ma.shape[0])) - set(p[0] for p in pairs))
     ub = sorted(set(range(mb.shape[0])) - set(p[1] for p in pairs))
     return pairs, ua, ub
+
+
+def kept_subset(rb, rm, kb, km, thr):
+    """Is the candidate (kb boxes (K,5), km masks) a subset of the reference instances (rb, rm) with bit-identical
+    masks? For a run in kept-queries mode (kept_queries.py) against a full run. Instances are paired by the bytes
+    of their masks (each ref instance used once). Information only, never part of the verdict."""
+    import hashlib
+
+    def h(m):
+        m = np.asarray(m, dtype=bool)
+        return hashlib.sha1(np.packbits(m).tobytes() + str(m.shape).encode()).hexdigest()
+    by_hash = {}
+    for i, m in enumerate(rm):
+        by_hash.setdefault(h(m), []).append(i)
+    idx, used = [], set()
+    for m in km:
+        free = [i for i in by_hash.get(h(m), []) if i not in used]
+        idx.append(free[0] if free else None)
+        if free:
+            used.add(free[0])
+    matched = [(j, i) for j, i in enumerate(idx) if i is not None]
+    dscore = [abs(float(kb[j, 4]) - float(rb[i, 4])) for j, i in matched]
+    above = set(int(i) for i in np.nonzero(np.asarray(rb)[:, 4] >= thr)[0]) if len(rb) else set()
+    ri = [i for _, i in matched]
+    dropped = [float(rb[i, 4]) for i in range(len(rb)) if i not in used]
+    return {
+        "n_ref": int(len(rb)), "n_kept": int(len(kb)),
+        "n_kept_mask_identical": len(matched),
+        "n_kept_box_identical": sum(1 for j, i in matched if np.array_equal(kb[j, :4], rb[i, :4])),
+        "n_kept_score_identical": sum(1 for d in dscore if d == 0.0),
+        "max_abs_dscore": max(dscore, default=0.0),
+        "order_preserved": ri == sorted(ri),
+        "n_ref_above_thr": len(above),
+        "ref_above_thr_missing": sorted(above - used),
+        "max_ref_score_dropped": max(dropped) if dropped else None,
+    }
 
 
 # ---------------------------------------------------------------- dataseries
@@ -228,6 +268,12 @@ def compare_image(ref_dir, cand_dir, iid, crit=CRITERIA):
         "masks_bit_identical": bool(A["masks"].shape == B["masks"].shape and np.array_equal(A["masks"], B["masks"])),
         "scores_identical": bool(A["scores"].shape == B["scores"].shape and np.array_equal(A["scores"], B["scores"])),
     }
+    # a candidate in kept-queries mode returns only part of the instances: is it a bit-identical subset?
+    sub = kept_subset(A["boxes"], A["masks"], B["boxes"], B["masks"], thr)
+    sub["is_bit_identical_subset"] = bool(sub["n_kept_mask_identical"] == sub["n_kept"] and
+                                          sub["n_kept_box_identical"] == sub["n_kept"] and
+                                          sub["n_kept_score_identical"] == sub["n_kept"])
+    res["cand_subset_of_ref"] = sub
     # dataseries
     dsa = common.read_json(pr["ds"])
     dsb = common.read_json(pc["ds"])
@@ -259,6 +305,21 @@ def compare_image(ref_dir, cand_dir, iid, crit=CRITERIA):
             band, len(inst["near_threshold"]["ref"]), len(inst["near_threshold"]["cand"])))
     res["pass"] = not R
     return res
+
+
+def _subset_summary(images):
+    subs = [r["cand_subset_of_ref"] for r in images if "cand_subset_of_ref" in r]
+    out = {k: sum(s[k] for s in subs) for k in ("n_kept", "n_kept_mask_identical", "n_kept_box_identical",
+                                                "n_kept_score_identical", "n_ref_above_thr")}
+    out.update(n_images=len(subs),
+               n_images_bit_identical_subset=sum(1 for s in subs if s["is_bit_identical_subset"]),
+               n_images_order_preserved=sum(1 for s in subs if s["order_preserved"]),
+               n_ref_above_thr_missing=sum(len(s["ref_above_thr_missing"]) for s in subs),
+               max_abs_dscore=max((s["max_abs_dscore"] for s in subs), default=None),
+               max_ref_score_dropped=max((s["max_ref_score_dropped"] for s in subs
+                                          if s["max_ref_score_dropped"] is not None), default=None),
+               note="information only: cand instances paired with ref instances by identical mask bytes")
+    return out
 
 
 def compare_runs(ref, cand, expected="union"):
@@ -312,6 +373,7 @@ def compare_runs(ref, cand, expected="union"):
         "n_images_scores_identical": sum(1 for r in images if (r.get("all_instances") or {}).get(
             "scores_identical")),
         "n_images_dataseries_identical": sum(1 for r in images if (r.get("dataseries") or {}).get("identical")),
+        "cand_subset_of_ref": _subset_summary(images),
         "n_images_input_differs": sum(1 for r in images if any("input" in n for n in r.get("notes", []))),
         "worst_min_iou": [{"id": r["id"], "min_iou": (r.get("instances") or {}).get("min_iou"),
                            "pass": r["pass"]} for r in worst_iou],
@@ -346,6 +408,12 @@ def main(argv=None):
                                                                      s["global_min_ds_frac"]))
     print("  bit-identical masks on %d images, identical scores on %d, identical dataseries on %d" % (
         s["n_images_masks_bit_identical"], s["n_images_scores_identical"], s["n_images_dataseries_identical"]))
+    sub = s["cand_subset_of_ref"]
+    if sub["n_kept"] < sum(r["all_instances"]["n_ref"] for r in res["images"] if "all_instances" in r):
+        print("  cand returns fewer instances (kept-queries mode?): %d of its %d instances are bit-identical ref "
+              "instances, scores identical %d (max |d| %s); ref instances >= %.2f missing: %d (info)" % (
+                  sub["n_kept_mask_identical"], sub["n_kept"], sub["n_kept_score_identical"], sub["max_abs_dscore"],
+                  CRITERIA["score_thr"], sub["n_ref_above_thr_missing"]))
     for p in s["run_problems"]:
         print("  RUN PROBLEM:", p)
     for f in s["failures"]:
