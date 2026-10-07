@@ -100,3 +100,43 @@ Speed (`tools/throughput/batch_infer.py`, 72 images, `--repeat 2`; "off" from th
 With the mode on, one pipelined GPU worker keeps the GPU stage busy 90 % of the time; a second worker adds ~10 %;
 three or four lose to CPU contention (every ROCm process under WSL keeps ~2 cores busy, plus pre/post workers).
 Every timed pass gave the same dataseries as pass 0, and each run passed the acceptance against both references.
+
+## Job engine (`lineformer batch` / `serve`)
+
+`lineformer_engine.py` runs the per-image maths of `get_dataseries` (forward swapped for the GPU worker's result,
+as in `tools/throughput/batch_infer.py`, whose pieces it now holds) in pre-processing workers -> N GPU workers ->
+post-processing workers. Each GPU worker builds its model with `scale_compat.build_model` and calls
+`kept_queries.configure(model, thr)` explicitly (off = False; the environment variable is not read). The main
+process holds no model and never starts the ROCm runtime. Verified on the same 72 images (RX 7900 XTX, pytorch
+MSDA, `tools/engine/to_harness.py` + `compare.py`, the fixed acceptance; all in-sample):
+
+| check | result |
+|---|---|
+| (a) batch, defaults (1 GPU worker, all 100 instances + masks saved) vs C / vs A | PASS 72/72 / PASS 72/72; vs C min IoU 1.0, max \|dscore\| 7.2e-7, masks bit-identical on 69, dataseries identical on 72; vs A min IoU 0.99995, max \|dscore\| 1.1e-5 |
+| (b) batch, `--kept-only --gpu-workers 2` vs D_kept (run.py, kept 0.3) / A / C | PASS 72/72 each; vs D_kept masks bit-identical on 72, max \|dscore\| 1.7e-6, dataseries identical on 72; the 126 kept instances are bit-identical masks of C's |
+| (c) serve (kept, 2 GPU workers): two concurrent 72-image jobs + one job cancelled mid-run (12 done, 20 in flight at the cancel) | `tools/engine/serve_check.py` PASS: jobs done 72/72, cancelled job 32 done + 40 cancelled, manifests consistent, no duplicate or stray outputs, no temp files; each job vs (b) PASS 72/72 (masks bit-identical, dataseries identical), lines identical to (b) 72/72 |
+| (d) one job with an unreadable file, two files with one stem, one path twice | job `done_with_errors`, exit 1: unreadable -> failed (cv2.imread None), second stem -> failed ("id collision ..."), repeated path -> duplicate, the rest done; with `--ids parent_stem` the stem clash is done |
+| (e) batch SIGINT after 80 of 216 images | exit 130, job `interrupted` (80 done, 136 pending); rerun: 80 skipped + 136 done, lines of all 216 identical to (b). Server SIGTERM during a job: drained in 6 s, job `interrupted` (59 done), restarted server + resubmit: 59 skipped + 157 done; no shared-memory blocks left |
+| out of memory (defaults, `--gpu-mem-budget 2G`) | the first forward raises, engine fails once: exit 2, job `failed` with the OOM message, nothing retried |
+| GPU worker killed (`kill -9`) during a job | exit 2, job `failed`: "worker process(es) died: gpu pid ... exit -9" |
+| `--tile 512`, `--input-size native` (kept) | smoke only, 6 images done; native: 3.6 GB peak allocated per worker on 1436 x 2872 px |
+
+Throughput, kept-only 0.3, lines only, 216 images (the 72 three times under different ids), images and outputs on
+the Windows drive (`/mnt/c`, 9p); job clock from the first image fed to the last done, model load (~6 s) not
+included. Another session's processes held ~1.5 GB of the card (no GPU jobs of theirs ran), WSL load average 4-7.
+
+| config | images/s | GPU s/image (median) | pre s/image (median) |
+|---|---|---|---|
+| batch, 1 GPU worker, 4 pre workers | 15.5 | 0.050 | 0.19 |
+| batch, 2 GPU workers, 4 pre workers | 16.7 | 0.065 | 0.21 |
+| batch, 1 GPU worker, 8 pre workers | 16.4 | 0.050 | 0.22 |
+| batch, 2 GPU workers, 8 pre workers | 20.0 | 0.067 | 0.31 |
+| serve, 1 GPU worker, 4 pre workers | 14.5 | 0.050 | 0.18 |
+| serve, 2 GPU workers, 4 pre workers | 17.8 | 0.062 | 0.20 |
+| serve, 2 concurrent jobs + cancelled job, 2 GPU workers, 4 pre, instances + masks | 16.5 (all jobs) | | |
+
+With 4 pre-processing workers the reading + resizing stage (~0.2 s per image, each image read twice for its
+sha256) limits the rate; 8 workers with 2 GPU workers reach the 20.6 images/s of the E2 benchmark. Per GPU worker
+in kept mode: 0.48 GB allocated, 0.78-0.86 GB reserved at peak. Saving all 100 masks per image (defaults with
+`--masks`) is post-processing-bound: 2.0 images/s; kept mode with instances + masks, 2 GPU workers: 8.8 images/s
+(single runs; the serve and batch numbers are single runs too, so differences of ~1 image/s are within noise).

@@ -137,6 +137,30 @@ It writes `<out>/<stem>.json` (`{"image": ..., "lines": [[{"x":..,"y":..}, ...],
 and with `--masks` `<stem>.masks.npz`; existing outputs are skipped unless `--force`. `--kept-only` switches on the
 kept-queries mode above (same lines, about 4x less GPU time per image).
 
+#### Batch jobs and a job server
+
+`lineformer batch` runs a list of images through the job engine (`lineformer_engine.py`: pre-processing
+workers -> N GPU workers, each with its own model and a share of the device memory -> post-processing workers);
+`lineformer serve` keeps the models loaded and takes jobs over a local HTTP JSON API, so several callers share
+one owner of the GPU. `lineformer_client.py` is a standard-library client (no torch) for other environments.
+
+```bash
+lineformer batch --ckpt iter_3000.pth --list images.txt --out out/ --kept-only --gpu-workers 2 --pre-workers 8
+lineformer serve --ckpt iter_3000.pth --port 8775 --kept-only --gpu-workers 2 --pre-workers 8
+```
+
+```python
+from lineformer_client import LineFormerClient
+lf = LineFormerClient("http://127.0.0.1:8775")
+lf.wait(lf.submit(["/abs/chart1.png", "/abs/chart2.png"], out="/abs/out", instances=True))
+```
+
+Per image `<id>.json` (the lines of `get_dataseries`, provenance, timings), optionally `<id>.instances.npz` and
+`<id>.masks.npz`, and a `job.json` manifest per job; atomic writes, skip-if-done, an unreadable image fails alone,
+out of GPU memory ends the job loudly. Outputs were checked with `tools/equivalence` against the reference runs
+(same acceptance, 72 of 72 images); ~20 images/s with `--kept-only` and two GPU workers on the RX 7900 XTX.
+Details, options and recommended settings: `rocm/INSTALL.md` (Use) and `rocm/NOTES.md`.
+
 Please cite the LineFormer paper (see [Citation](#citation) and `CITATION.cff`) when you use this code.
 
 ## Citation
