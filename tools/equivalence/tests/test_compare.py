@@ -155,6 +155,28 @@ def test_dataseries_one_px_tolerance():
     assert abs(r["frac_within_px"] - 0.98) < 1e-9 and r["n_matched_lines"] == 1
 
 
+def test_same_directory_is_refused():
+    with _Tmp() as t:
+        _write_run(t / "A", "A", _base())
+        try:
+            compare.compare_runs(t / "A", t / "A")
+        except ValueError:
+            return
+        raise AssertionError("comparing a run with itself must raise")
+
+
+def test_different_input_pixels_fail():
+    with _Tmp() as t:
+        _write_run(t / "A", "A", _base())
+        _write_run(t / "B", "B", _base())
+        p = common.run_paths(t / "B", "img1")["meta"]
+        m = common.read_json(p)
+        m["pixels_sha256"] = "other"
+        common.write_json(p, m)
+        img = compare.compare_runs(t / "A", t / "B")["images"][0]
+        assert not img["pass"] and "pixels" in " ".join(img["reasons"])
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

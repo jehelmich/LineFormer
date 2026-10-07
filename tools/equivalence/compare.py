@@ -176,9 +176,11 @@ def compare_image(ref_dir, cand_dir, iid, crit=CRITERIA):
             res["reasons"].append("%s: run status %s" % (side, m.get("status")))
     if res["reasons"]:
         return res
-    for k in ("file_sha256", "pixels_sha256"):
-        if metas["ref"].get(k) != metas["cand"].get(k):
-            res["notes"].append("input %s differs between runs" % k)
+    if metas["ref"].get("file_sha256") != metas["cand"].get("file_sha256"):
+        res["notes"].append("input file_sha256 differs between runs (same pixels is still a valid comparison)")
+    if metas["ref"].get("pixels_sha256") != metas["cand"].get("pixels_sha256"):
+        res["reasons"].append("the runs read different input pixels (pixels_sha256 differs)")
+        return res
     res["shape"] = metas["ref"].get("shape")
     pr, pc = common.run_paths(ref_dir, iid), common.run_paths(cand_dir, iid)
     A = common.load_instances(pr["npz"])
@@ -260,7 +262,9 @@ def compare_image(ref_dir, cand_dir, iid, crit=CRITERIA):
 
 
 def compare_runs(ref, cand, expected="union"):
-    mr = common.read_json(Path(ref) / "run_meta.json") if (Path(ref) / "run_meta.json").exists() else {}
+    if Path(ref).resolve() == Path(cand).resolve():
+        raise ValueError("ref and cand are the same run directory (%s): the comparison would pass vacuously" % ref)
+    mr =common.read_json(Path(ref) / "run_meta.json") if (Path(ref) / "run_meta.json").exists() else {}
     mc = common.read_json(Path(cand) / "run_meta.json") if (Path(cand) / "run_meta.json").exists() else {}
     problems = []
     if not mr:
