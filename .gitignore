@@ -162,3 +162,23 @@ cython_debug/
 # pytorch models
 *.pt
 *.pth
+
+# ---- LineFormer fork: local environments, checkpoints, run outputs and notes stay out of the repository
+.ruff_cache/
+/lineformer*/
+*.ckpt
+*.npz
+*.npy
+job.json
+/out/
+/outputs/
+/runs/
+/work_dirs/
+/train_work_dir/
+/site/
+/tmp/
+/scratch/
+ROCM_SETUP_NOTES.md
+*PLAN*.md
+PROGRESS.md
+NOTES.local.md
