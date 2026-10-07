@@ -1,7 +1,7 @@
 """Convert an engine output directory (`lineformer batch` / `serve` with instances and masks) into a run directory of
 tools/equivalence, so that compare.py can judge the engine against reference runs.
 
-    python tools/engine/to_harness.py --engine-out out/ --out runs/engine_kept [--tag engine_kept]
+    python tools/equivalence/to_harness.py --engine-out out/ --out runs/engine_kept [--tag engine_kept]
 
 Per image of the manifest (<engine-out>/job.json): <id>.npz (boxes, labels from <id>.instances.npz; masks from
 <id>.masks.npz - both are required), <id>.dataseries.json (the "lines" of <id>.json), <id>.meta.json (status,
@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / 'equivalence'))
+sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent.parent))
 import common  # noqa: E402
 import lineformer_jobs as jobs  # noqa: E402
@@ -69,7 +69,7 @@ def convert(engine_out, out, tag=None):
             n_err += 1
         common.write_json(paths['meta'], meta)
     eng = man.get('engine') or {}
-    run_meta = {'tag': tag or out.name, 'runner': 'lineformer engine (tools/engine/to_harness.py)',
+    run_meta = {'tag': tag or out.name, 'runner': 'lineformer engine (tools/equivalence/to_harness.py)',
                 'engine_out': str(engine_out.resolve()), 'job': man.get('job'), 'job_status': man.get('status'),
                 'image_ids': ids, 'device_requested': eng.get('device'), 'msda_handling': eng.get('msda_path'),
                 'kept_queries_threshold': eng.get('kept_thr'), 'versions': eng.get('versions'),

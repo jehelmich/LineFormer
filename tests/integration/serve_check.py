@@ -1,6 +1,6 @@
 """Load check of a running `lineformer serve`: concurrent jobs + one cancelled job, then consistency checks.
 
-    python tools/engine/serve_check.py --url http://127.0.0.1:8775 --images list.txt --out-base /tmp/sc \
+    python tests/integration/serve_check.py --url http://127.0.0.1:8775 --images list.txt --out-base /tmp/sc \
         [--jobs 2] [--cancel-after 3] [--instances --masks] [--report report.json]
 
 Submits --jobs jobs over the same image list (out dirs <out-base>/job<k>) and one more job (<out-base>/cancel,
