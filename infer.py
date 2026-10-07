@@ -11,6 +11,7 @@ from mmdet.apis import (inference_detector, init_detector)
 # sys.path.append("/home/csgrad/jayashok/Mask2Former/")
 from clean_chart import get_clean_input
 import line_utils
+from msda_compat import configure_msda, get_msda_path
 
 import copy
 
@@ -47,8 +48,12 @@ def get_distinct_colors(n):
     return (hsv_to_bgr(huePartition * value, 1.0, 1.0) for value in range(0, n))
 
 
-def load_model(config, ckpt, device):
+def load_model(config, ckpt, device, msda=None):
+    """device: 'cpu', 'cuda' or 'cuda:N' (also AMD GPUs through ROCm builds of PyTorch).
+    msda: MultiScaleDeformableAttention path on a GPU, 'auto' | 'compiled' | 'pytorch'
+    (default: env LINEFORMER_MSDA, else 'auto'); see msda_compat.py. Ignored on cpu."""
     global model
+    configure_msda(device, msda)
     model = init_detector(config, ckpt, device=device)
     return
 
