@@ -3,8 +3,9 @@
     python tools/engine/serve_check.py --url http://127.0.0.1:8775 --images list.txt --out-base /tmp/sc \
         [--jobs 2] [--cancel-after 3] [--instances --masks] [--report report.json]
 
-Submits --jobs jobs over the same image list (out dirs <out-base>/job<k>), then one more job (<out-base>/cancel)
-that is cancelled --cancel-after seconds later, and waits for all. Checks (exit 1 if any fails):
+Submits --jobs jobs over the same image list (out dirs <out-base>/job<k>) and one more job (<out-base>/cancel,
+priority --cancel-priority, default 1 so that it runs first) that is cancelled --cancel-after seconds later, while
+images of it are in flight, and waits for all. Checks (exit 1 if any fails):
   * every normal job ends "done" with every image done (none failed, skipped or duplicate);
   * the cancelled job ends "cancelled": done + cancelled = all, none failed, and only done images have outputs;
   * per job: the manifest's counts equal its per-image statuses; every done image has exactly one <id>.json whose
@@ -82,6 +83,9 @@ def main(argv=None):
     ap.add_argument('--out-base', required=True)
     ap.add_argument('--jobs', type=int, default=2)
     ap.add_argument('--cancel-after', type=float, default=3.0)
+    ap.add_argument('--cancel-priority', type=int, default=1,
+                    help='priority of the job to cancel (default 1: it runs first, so it is cancelled mid-way with '
+                         'images in flight; 0: it queues behind the others)')
     ap.add_argument('--instances', action='store_true')
     ap.add_argument('--masks', action='store_true')
     ap.add_argument('--report', default=None)
@@ -95,9 +99,13 @@ def main(argv=None):
             raise SystemExit('%s exists; the check needs fresh output directories' % o)
     h0 = lf.health()
     t0 = time.time()
-    ids = [lf.submit(items, o, instances=a.instances, masks=a.masks, name='serve_check-%s' % o.name) for o in outs]
+    ids = [lf.submit(items, o, instances=a.instances, masks=a.masks, name='serve_check-%s' % o.name,
+                     priority=a.cancel_priority if o.name == 'cancel' else 0) for o in outs]
     time.sleep(a.cancel_after)
+    before = lf.status(ids[-1])['counts']
     cancel_resp = lf.cancel(ids[-1])
+    if a.cancel_priority > 0 and not before['done'] + before['running']:
+        print('note: the cancelled job had not started; raise --cancel-after', file=sys.stderr)
     finals = [lf.wait(j, poll=0.5, accept=FINAL) for j in ids]
     t1 = time.time()
     probs, lines_by_job, mans = [], [], []
@@ -116,6 +124,8 @@ def main(argv=None):
     n_done = sum(m['counts']['done'] for m in mans)
     span = max(ends) - min(starts) if starts and ends else None
     rep = {'url': a.url, 'jobs': ids, 'outs': [str(o) for o in outs], 'n_images_per_job': len(items),
+           'cancel_job_counts_before_cancel': before,
+           'cancel_response_counts': cancel_resp['job']['counts'],
            'cancel_response_status': cancel_resp['job']['status'], 'final': [
                {'job': f['job'], 'status': f['status'], 'counts': f['counts'],
                 'images_per_s': f['timing'].get('images_per_s'), 'wall_s': f['timing'].get('wall_s')}
@@ -129,7 +139,8 @@ def main(argv=None):
         Path(a.report).parent.mkdir(parents=True, exist_ok=True)
         with open(a.report, 'w', encoding='utf-8') as f:
             json.dump(rep, f, indent=1)
-    print(json.dumps({k: rep[k] for k in ('verdict', 'final', 'n_done_total', 'span_s', 'images_per_s_all_jobs',
+    print(json.dumps({k: rep[k] for k in ('verdict', 'cancel_job_counts_before_cancel', 'cancel_response_counts',
+                                          'final', 'n_done_total', 'span_s', 'images_per_s_all_jobs',
                                           'problems')}, indent=1))
     return 0 if not probs else 1
 

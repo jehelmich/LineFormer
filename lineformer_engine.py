@@ -423,7 +423,7 @@ def _pipeline_cfg(mo):
     return scale_compat.build_config(mo['config'], mo['input_size'])
 
 
-def pre_worker(mo, threads, task_q, pre_q):
+def pre_worker(mo, threads, task_q, pre_q, stat_q=None):
     worker_signals()
     cpu_only_torch()
     import cv2
@@ -431,6 +431,8 @@ def pre_worker(mo, threads, task_q, pre_q):
     import tiling
     apply_threads(threads)
     pipeline = build_test_pipeline(_pipeline_cfg(mo))
+    if stat_q is not None:
+        stat_q.put(('ready_cpu', 'pre', os.getpid(), {}))
     while True:
         rec = task_q.get()
         if rec is None:
@@ -616,12 +618,14 @@ def write_outputs(infer, rec, result, tile_info=None):
     return paths['json'], obj
 
 
-def post_worker(mo, threads, post_q, done_q):
+def post_worker(mo, threads, post_q, done_q, stat_q=None):
     worker_signals()
     cpu_only_torch()
     apply_threads(threads)
     import infer
     import tiling
+    if stat_q is not None:
+        stat_q.put(('ready_cpu', 'post', os.getpid(), {}))
     while True:
         rec = post_q.get()
         if rec is None:
@@ -759,32 +763,38 @@ class Engine:
         for w in range(self.n_gpu):
             spawn('gpu', gpu_worker, (w, mod, self.budget, self.n_gpu, self.threads['gpu'], self.pre_q, self.post_q,
                                       self.stat_q))
+        # the CPU workers import mmcv / mmdet while the models load; feeding starts when every worker is ready, so
+        # a job's clock does not include start-up
+        for _ in range(self.n_pre):
+            spawn('pre', pre_worker, (mod, self.threads['pre'], self.task_q, self.pre_q, self.stat_q))
+        for _ in range(self.n_post):
+            spawn('post', post_worker, (mod, self.threads['post'], self.post_q, self.done_q, self.stat_q))
         t0 = time.time()
-        while len(self.worker_info) < self.n_gpu:
+        n_cpu_ready = 0
+        while len(self.worker_info) < self.n_gpu or n_cpu_ready < self.n_pre + self.n_post:
             try:
                 kind, wid, pid, info = self.stat_q.get(timeout=1.0)
             except queue_mod.Empty:
-                dead = [p.pid for p in self.procs['gpu'] if not p.is_alive()]
+                dead = [(r, p.pid) for r, ps in self.procs.items() for p in ps if not p.is_alive()]
                 if dead or time.time() - t0 > self.ready_timeout_s:
-                    self._start_failed('GPU worker(s) %s before ready' % (
-                        'died (pids %s)' % dead if dead else 'not ready after %d s' % self.ready_timeout_s))
+                    self._start_failed('worker(s) %s before ready' % (
+                        'died (%s)' % dead if dead else 'not ready after %d s' % self.ready_timeout_s))
                 continue
             if kind == 'fatal':
                 self._start_failed('GPU worker %d failed while loading:\n%s' % (wid, info))
+            if kind == 'ready_cpu':
+                n_cpu_ready += 1
             if kind == 'ready':
                 self.worker_info[wid] = dict(info, pid=pid, ready_s=time.time() - t0)
                 self.log('GPU worker %d ready (pid %d, MSDA %s, %.1f s)' % (wid, pid, info.get('msda_path'),
                                                                           time.time() - t0))
+        self.log('all workers ready after %.1f s' % (time.time() - t0))
         if 'device_free_MB' in self.worker_info[0]:
             grow = sum(i.get('mem_cap_MB', 0) - i.get('reserved_MB', 0) for i in self.worker_info.values())
             free = min(i['device_free_MB'] for i in self.worker_info.values())
             if grow > free:
                 self.log('WARNING: the GPU workers may still grow by %.0f MB, the device had %.0f MB free after '
                          'loading; an out-of-memory error ends the engine' % (grow, free))
-        for _ in range(self.n_pre):
-            spawn('pre', pre_worker, (mod, self.threads['pre'], self.task_q, self.pre_q))
-        for _ in range(self.n_post):
-            spawn('post', post_worker, (mod, self.threads['post'], self.post_q, self.done_q))
         with self.cond:
             if self.state != 'starting':  # shutdown() was called while the models loaded
                 self.log('start: engine is %s, not feeding' % self.state)
@@ -949,7 +959,7 @@ class Engine:
                     else:
                         job.finish_record(res)
                         if job.final:
-                            job.write_manifest(self.engine_info)
+                            job.write_manifest(self._info())
                             self.log('job %s %s: %s' % (job.id, job.status, _fmt_counts(job.counts())))
                     self.cond.notify_all()
                 if self.state in ('running', 'stopping') and not self._stopping_workers:
@@ -978,11 +988,17 @@ class Engine:
             elif kind in ('stats', 'done'):
                 self.worker_stats[wid] = dict(info, t=time.time(), pid=pid)
 
+    def _info(self):
+        """engine_info + the GPU workers' last memory statistics (at most ~2 s old)."""
+        stats = {str(k): {kk: (round(vv, 1) if isinstance(vv, float) else vv) for kk, vv in v.items()}
+                 for k, v in self.worker_stats.items()}
+        return dict(self.engine_info or {}, worker_stats=stats)
+
     def _write_manifests(self, force=False):
         for j in self.sched.jobs.values():
             if j.dirty or force:
                 try:
-                    j.write_manifest(self.engine_info)
+                    j.write_manifest(self._info())
                 except Exception as e:
                     self.log('cannot write manifest of job %s: %r' % (j.id, e))
 
@@ -1015,7 +1031,7 @@ class Engine:
             job.id = jobs.new_job_id(self._job_seq)
             self.sched.add(job)
             job.maybe_finish()
-            job.write_manifest(self.engine_info)
+            job.write_manifest(self._info())
             self.cond.notify_all()
         self.log('job %s queued: %s -> %s' % (job.id, _fmt_counts(job.counts()), job.out))
         return job.id
@@ -1043,7 +1059,7 @@ class Engine:
         with self.cond:
             j = self._job(job_id)
             changed = j.cancel()
-            j.write_manifest(self.engine_info)
+            j.write_manifest(self._info())
             self.cond.notify_all()
             return changed, j.summary()
 
