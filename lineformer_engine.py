@@ -38,16 +38,28 @@ Model options (ModelOptions; one set per engine - a different input size or thre
 Every GPU worker builds its model with scale_compat.build_model and calls kept_queries.configure(model, thr)
 explicitly (off = False), then checks the threshold and the parameter device.
 
-Memory: gpu_mem_budget is the share of the device all GPU workers together may use (a fraction <= 1, default
-0.85, or an absolute size such as "4G"); each worker caps its caching allocator at budget / N
+Memory: gpu_mem_budget is the share of the device all GPU workers together may use (a fraction <= 1, or an
+absolute size such as "4G"); each worker caps its caching allocator at budget / N
 (torch.cuda.set_per_process_memory_fraction). Kept-queries mode needs ~1 GB per worker, the full mmdet path up to
 ~12 GB per worker on 1.5-3.5k px images.
 
+Automatic sizing (gpu_workers=None and/or gpu_mem_budget=None; the command line's default): at start() the free
+device memory is measured (torch.cuda.mem_get_info, in a short-lived subprocess), a headroom for other processes
+is kept (max(2 GiB, 10 % of the device)), and plan_gpu_workers decides: N = min(2, (free - headroom) // need) GPU
+workers (need: AUTO_* constants below, with their sources), budget = free - headroom. Nothing fits -> EngineFailed
+with the numbers. On a CPU device: 1 worker, no budget. The decision is logged and goes into engine_info
+("auto_sizing"), so into every job manifest. Only measured configurations are sized automatically (input size
+'config', no tiling); others need both values.
+
 Failure rules:
   * an image that cannot be read or fails in a stage: that image fails (traceback recorded), the job goes on;
-  * out of memory on the device, a worker that raises outside an image, or a worker process that dies: the
-    ENGINE fails - every active job ends with status "failed" and the error, its manifest is written, the
-    workers are stopped, nothing is retried;
+  * out of memory on the device while a GPU worker runs an image (bounded back-off): that worker stops (its memory
+    is released; it is not restarted, so the number of GPU workers only goes down) and the image is requeued
+    ONCE to a remaining worker. The image's second out-of-memory, or one on the last GPU worker, fails the
+    ENGINE as below, with the memory numbers. Every back-off event (time, image, worker, memory) is logged and
+    kept in engine_info["backoff"] (so in the job manifests);
+  * a worker that raises outside an image or a worker process that dies: the ENGINE fails - every active job
+    ends with status "failed" and the error, its manifest is written, the workers are stopped, nothing is retried;
   * shutdown(): no new images are fed; in-flight images finish (or, after the timeout / abandon=True, are left);
     unfinished jobs end "interrupted" with their pending images listed; outputs already written stay valid, so
     a rerun of the same job skips them (skip-if-done).
@@ -73,6 +85,21 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG = str(HERE / 'lineformer_swin_t_config.py')
 THREAD_ENV = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS')
 LINE_THR = 0.3  # infer.get_dataseries -> do_instance(score_thr=0.3); parse_result keeps score > 0.3
+TASK_KEYS = ('job', 'idx', 'id', 'path', 'out', 'instances', 'masks', 'fingerprint')  # what the feeder sends
+
+# ------------------------------------------------------------------ automatic sizing: measured device memory
+# Device memory of one GPU worker, measured on an RX 7900 XTX (ROCm 7.2, WSL2) on the 72 test images (1.5-3.5k px
+# windows and the demo), input size 'config':
+AUTO_KEPT_PEAK_MB = 860           # kept-queries mode: peak reserved per worker 766-834 MB (docs/VALIDATION.md,
+#                                   release validation v0.3.0 item 4), 0.78-0.86 GB ("Speed", 2 workers)
+AUTO_ALL_QUERIES_PEAK_MB = 12288  # all 100 queries: peak 12 GB per process (docs/VALIDATION.md "Speed")
+AUTO_CONTEXT_MB = 712             # the runtime context of a process outside PyTorch's allocator: device free memory
+#                                   seen by another process before/after a process created one tensor (712 MB)
+AUTO_SAFETY = 1.5                 # need = AUTO_SAFETY x (peak + context): images larger than the test set
+AUTO_HEADROOM_MIN_MB = 2048       # left free for other processes: max(2 GiB, 10 % of the device)
+AUTO_HEADROOM_FRAC = 0.10
+AUTO_MAX_GPU_WORKERS = 2          # the measured knee: a second worker adds ~10 %, a third or fourth loses
+#                                   (docs/VALIDATION.md "Speed")
 
 
 # ================================================================== per-image pieces (also used by the unit tests)
@@ -391,6 +418,81 @@ def resolve_device(device):
     return 'cuda:0' if out[-1] == '1' else 'cpu'
 
 
+def probe_device_memory(device):
+    """-> (free bytes, total bytes) of a GPU device (torch.cuda.mem_get_info: the whole device, other processes
+    included), measured in a short-lived subprocess so the calling process never initialises the GPU runtime."""
+    import json
+    import subprocess
+    code = ('import json, torch; d = torch.device(%r); f, t = torch.cuda.mem_get_info(d); '
+            'print(json.dumps([f, t]))' % str(device))
+    r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=600)
+    out = r.stdout.strip().splitlines()
+    try:
+        free, total = json.loads(out[-1])
+    except Exception:
+        raise RuntimeError('measuring the free memory of %s (torch.cuda.mem_get_info) failed:\n%s'
+                           % (device, (r.stderr or r.stdout)[-2000:])) from None
+    return int(free), int(total)
+
+
+class InsufficientMemory(RuntimeError):
+    """Automatic sizing found no room for a GPU worker."""
+
+
+def auto_need_mb(kept_thr):
+    """Device memory one GPU worker needs (MB) for automatic sizing; the AUTO_* constants give the sources."""
+    peak = AUTO_KEPT_PEAK_MB if kept_thr is not None else AUTO_ALL_QUERIES_PEAK_MB
+    return AUTO_SAFETY * (peak + AUTO_CONTEXT_MB)
+
+
+def plan_gpu_workers(free, total, kept_thr, gpu_workers=None, gpu_mem_budget=None):
+    """The automatic sizing rule (module docstring). free / total: device bytes; gpu_workers / gpu_mem_budget: the
+    values given (None = decide). -> dict with free_MB, total_MB, headroom_MB, usable_MB, need_MB, gpu_workers,
+    budget (('bytes', n) as parse_mem_budget gives it), budget_MB, rule. Raises InsufficientMemory with the numbers
+    when not even one worker fits, ValueError on bad values."""
+    mb = 2 ** 20
+    headroom = max(AUTO_HEADROOM_MIN_MB * mb, AUTO_HEADROOM_FRAC * total)
+    usable = free - headroom
+    need = auto_need_mb(kept_thr) * mb
+    mode = 'kept-queries mode' if kept_thr is not None else 'all queries'
+    plan = {'free_MB': round(free / mb), 'total_MB': round(total / mb), 'headroom_MB': round(headroom / mb),
+            'usable_MB': round(usable / mb), 'need_MB': round(need / mb), 'mode': mode,
+            'max_auto_gpu_workers': AUTO_MAX_GPU_WORKERS, 'safety': AUTO_SAFETY}
+    numbers = ('device free %d MB of %d MB, headroom for other processes %d MB, usable %d MB, need per GPU worker '
+               '%d MB (%s)' % (plan['free_MB'], plan['total_MB'], plan['headroom_MB'], plan['usable_MB'],
+                               plan['need_MB'], mode))
+    hint = 'free GPU memory (other processes) or run on the CPU (--cpu)'
+    if gpu_mem_budget is None:
+        budget = usable
+        if gpu_workers is None:
+            n = min(AUTO_MAX_GPU_WORKERS, int(usable // need)) if usable > 0 else 0
+            if n < 1:
+                raise InsufficientMemory('not enough free GPU memory for one GPU worker: %s; %s' % (numbers, hint))
+            plan['rule'] = 'gpu_workers = min(%d, usable // need), budget = usable' % AUTO_MAX_GPU_WORKERS
+        else:
+            n = int(gpu_workers)
+            if usable < n * need:
+                raise InsufficientMemory('not enough free GPU memory for %d GPU worker(s): %s; %s, use fewer '
+                                         'gpu_workers, or set gpu_mem_budget to override' % (n, numbers, hint))
+            plan['rule'] = 'gpu_workers given, budget = usable'
+    else:
+        kind, val = parse_mem_budget(gpu_mem_budget)
+        budget = val * total if kind == 'frac' else val
+        if gpu_workers is None:
+            n = min(AUTO_MAX_GPU_WORKERS, int(budget // need))
+            if n < 1:
+                raise InsufficientMemory('gpu_mem_budget %s (%d MB) is less than one GPU worker needs: %s'
+                                         % (gpu_mem_budget, budget / mb, numbers))
+            plan['rule'] = 'gpu_mem_budget given, gpu_workers = min(%d, budget // need)' % AUTO_MAX_GPU_WORKERS
+        else:
+            n = int(gpu_workers)
+            plan['rule'] = 'both given'
+    plan.update(gpu_workers=n, budget=('bytes', int(budget)), budget_MB=round(budget / mb),
+                text='%s -> %d GPU worker(s), memory budget %d MB (%d MB cap per worker)'
+                     % (numbers, n, budget / mb, budget / mb / n))
+    return plan
+
+
 @dataclass
 class ModelOptions:
     ckpt: str
@@ -575,7 +677,10 @@ def build_worker_model(mo):
                    'input_size': getattr(model, 'lineformer_input_size', None)}
 
 
-def gpu_worker(wid, mo, budget, n_workers, threads, pre_q, post_q, stat_q):
+def gpu_worker(wid, mo, budget, n_workers, threads, pre_q, post_q, stat_q, hooks=None):
+    """One GPU worker. hooks: None in production; the unit tests pass an object with build_model(mo) and
+    forward(model, datas, wid, rec) to run the worker without a checkpoint and to inject faults (Engine
+    _test_hooks; nothing reads it from the environment)."""
     worker_signals()
     try:
         device = mo['device']
@@ -595,7 +700,7 @@ def gpu_worker(wid, mo, budget, n_workers, threads, pre_q, post_q, stat_q):
             info.update(mem_fraction=frac, mem_cap_MB=frac * total / 2 ** 20,
                         device_name=torch.cuda.get_device_name(dev))
         apply_threads(threads)
-        model, minfo = build_worker_model(mo)
+        model, minfo = build_worker_model(mo) if hooks is None else hooks.build_model(mo)
         info.update(minfo)
         info.update(_mem_info(device))
         stat_q.put(('ready', wid, os.getpid(), info))
@@ -618,8 +723,12 @@ def gpu_worker(wid, mo, budget, n_workers, threads, pre_q, post_q, stat_q):
                 post_q.put(rec)
                 continue
             t0 = time.time()
+            oom = None
             try:
-                results = [forward(model, [d], check_no_pad=False)[0] for d in datas]
+                if hooks is None:
+                    results = [forward(model, [d], check_no_pad=False)[0] for d in datas]
+                else:
+                    results = hooks.forward(model, datas, wid, rec)
                 sync(device)
                 t1 = time.time()
                 if rec.get('tiles'):
@@ -632,9 +741,23 @@ def gpu_worker(wid, mo, budget, n_workers, threads, pre_q, post_q, stat_q):
                     rec['packed'] = pack_result(results[0], 'all' if rec['masks'] else 'kept')
                 rec['t_gpu_start'], rec['t_gpu_end'], rec['t_pack_end'] = t0, t1, time.time()
             except Exception as e:
-                if _is_oom(e):
-                    raise  # the configuration does not fit: the engine fails instead of failing image after image
-                rec['error'] = traceback.format_exc()
+                if _is_oom(e):  # bounded back-off: this worker stops, the engine requeues the image or fails
+                    oom = {'error': traceback.format_exc(), 'memory': _mem_info(device)}
+                else:
+                    rec['error'] = traceback.format_exc()
+            if oom is not None:
+                results = datas = None
+                del model
+                import gc
+                gc.collect()
+                if str(device).startswith('cuda'):
+                    torch.cuda.empty_cache()
+                    oom['device_free_MB_after_release'] = _mem_info(device).get('device_free_MB')
+                for k in ('tensor_shapes', 'tiles', 'packed', 'packed_tiles'):
+                    rec.pop(k, None)
+                oom.update(rec=rec, n_images=n_img, t_busy_s=t_busy, mem_cap_MB=info.get('mem_cap_MB'))
+                stat_q.put(('oom', wid, os.getpid(), oom))
+                return  # the process ends; its device memory is released
             rec['gpu_worker'] = wid
             n_img += 1
             t_busy += time.time() - t0
@@ -763,16 +886,30 @@ class Engine:
 
     def __init__(self, model_options, gpu_workers=1, gpu_mem_budget=0.85, pre_workers=4, post_workers=4,
                  pre_threads=1, post_threads=1, gpu_threads=2, max_inflight=None, manifest_every_s=2.0,
-                 ready_timeout_s=900, log=None):
+                 ready_timeout_s=900, log=None, settings=None, _test_hooks=None):
+        """gpu_workers / gpu_mem_budget None: automatic sizing at start() (module docstring). settings: a dict
+        recorded in engine_info["settings"] (the command line's effective settings; gpu_workers and
+        gpu_mem_budget are replaced by the values used once start() has decided them). _test_hooks: unit tests
+        only (gpu_worker)."""
         self.mo = model_options.resolved()
         for k, v in (('gpu_workers', gpu_workers), ('pre_workers', pre_workers), ('post_workers', post_workers)):
-            if int(v) < 1:
+            if v is not None and (isinstance(v, bool) or int(v) < 1):
                 raise ValueError('%s must be >= 1, got %r' % (k, v))
-        self.n_gpu, self.n_pre, self.n_post = int(gpu_workers), int(pre_workers), int(post_workers)
+        if pre_workers is None or post_workers is None:
+            raise ValueError('pre_workers and post_workers must be given')
+        self.n_gpu = None if gpu_workers is None else int(gpu_workers)
+        self.n_pre, self.n_post = int(pre_workers), int(post_workers)
         self.threads = {'pre': int(pre_threads), 'post': int(post_threads), 'gpu': int(gpu_threads)}
-        self.budget = parse_mem_budget(gpu_mem_budget)
+        self.budget = None if gpu_mem_budget is None else parse_mem_budget(gpu_mem_budget)
         self.budget_arg = gpu_mem_budget
-        self.max_inflight = int(max_inflight or 2 * (self.n_pre + self.n_gpu + self.n_post))
+        self.max_inflight_arg = max_inflight
+        self.max_inflight = None if self.n_gpu is None else int(
+            max_inflight or 2 * (self.n_pre + self.n_gpu + self.n_post))
+        self.settings = dict(settings) if settings is not None else None
+        self._test_hooks = _test_hooks
+        self.auto_sizing = None
+        self.backoff = []  # out-of-memory events (module docstring, failure rules)
+        self.retired = set()  # GPU workers stopped by the back-off
         self.manifest_every_s = manifest_every_s
         self.ready_timeout_s = ready_timeout_s
         self.log = log or (lambda *a: print('[lineformer-engine]', *a, file=sys.stderr, flush=True))
@@ -809,9 +946,12 @@ class Engine:
             'model_options': asdict(mo), 'fingerprint': self.fingerprint, 'versions': self.versions,
             'device': mo.device, 'msda': mo.msda, 'msda_env': os.environ.get('LINEFORMER_MSDA'), 'msda_path': None,
             'kept_thr': mo.kept_thr, 'input_size': mo.input_size,
-            'tile': self.fingerprint['tile'], 'line_thr': LINE_THR, 'order': jobs.ORDER, 'gpu_workers': self.n_gpu,
-            'pre_workers': self.n_pre, 'post_workers': self.n_post, 'gpu_mem_budget': self.budget_arg,
-            'threads': self.threads, 'max_inflight': self.max_inflight, 'workers': None, 'pids': None}
+            'tile': self.fingerprint['tile'], 'line_thr': LINE_THR, 'order': jobs.ORDER,
+            'gpu_workers': 'auto' if self.n_gpu is None else self.n_gpu,
+            'pre_workers': self.n_pre, 'post_workers': self.n_post,
+            'gpu_mem_budget': 'auto' if self.budget_arg is None else self.budget_arg,
+            'threads': self.threads, 'max_inflight': self.max_inflight, 'workers': None, 'pids': None,
+            'auto_sizing': None, 'settings': self.settings, 'backoff': self.backoff, 'gpu_workers_active': None}
         self.state = 'prepared'
         self._accepting = True
         return self
@@ -823,6 +963,7 @@ class Engine:
             raise RuntimeError('engine already started (%s)' % self.state)
         self.state = 'starting'
         mo = self.mo
+        self._size_workers()
         ctx = mp.get_context('spawn')
         self.task_q = ctx.Queue()
         self.pre_q = ctx.Queue(maxsize=max(4, 2 * self.n_gpu))
@@ -847,10 +988,10 @@ class Engine:
             self.procs[role].append(p)
 
         self.log('starting %d GPU worker(s) on %s (input size %s, kept_thr %s, tile %s, memory budget %s)' % (
-            self.n_gpu, mo.device, mo.input_size, mo.kept_thr, mo.tile, self.budget_arg))
+            self.n_gpu, mo.device, mo.input_size, mo.kept_thr, mo.tile, self.engine_info['gpu_mem_budget']))
         for w in range(self.n_gpu):
             spawn('gpu', gpu_worker, (w, mod, self.budget, self.n_gpu, self.threads['gpu'], self.pre_q, self.post_q,
-                                      self.stat_q))
+                                      self.stat_q, self._test_hooks))
         # the CPU workers import mmcv / mmdet while the models load; feeding starts when every worker is ready, so
         # a job's clock does not include start-up
         for _ in range(self.n_pre):
@@ -882,7 +1023,8 @@ class Engine:
             free = min(i['device_free_MB'] for i in self.worker_info.values())
             if grow > free:
                 self.log('WARNING: the GPU workers may still grow by %.0f MB, the device had %.0f MB free after '
-                         'loading; an out-of-memory error ends the engine' % (grow, free))
+                         'loading; an out-of-memory error stops a GPU worker (bounded back-off, see '
+                         'lineformer_engine.py)' % (grow, free))
         with self.cond:
             if self.state != 'starting':  # shutdown() was called while the models loaded
                 self.log('start: engine is %s, not feeding' % self.state)
@@ -892,7 +1034,7 @@ class Engine:
                 workers={str(k): {kk: v.get(kk) for kk in ('pid', 'param_devices', 'msda_path', 'mem_fraction',
                                                            'mem_cap_MB', 'device_name', 'ready_s')}
                          for k, v in self.worker_info.items()},
-                pids={r: [p.pid for p in ps] for r, ps in self.procs.items()})
+                pids={r: [p.pid for p in ps] for r, ps in self.procs.items()}, gpu_workers_active=self.n_gpu)
             self._accepting = self._feeding = True
             self.state = 'running'
             for j in self.sched.active():  # jobs submitted before start: their manifests get the worker info
@@ -903,6 +1045,44 @@ class Engine:
             self._threads.append(t)
         self.log('engine running: %d pre, %d GPU, %d post workers' % (self.n_pre, self.n_gpu, self.n_post))
         return self
+
+    def _size_workers(self):
+        """Automatic sizing (module docstring) of whatever of gpu_workers / gpu_mem_budget was not given."""
+        mo = self.mo
+        if not str(mo.device).startswith('cuda'):
+            if self.n_gpu is None:
+                self.n_gpu = 1
+            self.auto_sizing = {'device': mo.device, 'rule': 'CPU device: 1 GPU-stage worker unless given, no '
+                                'memory budget', 'gpu_workers': self.n_gpu}
+        elif self.n_gpu is None or self.budget is None:
+            measured = mo.input_size == 'config' and mo.tile is None
+            if not measured:
+                self._start_failed('automatic sizing of the GPU workers has measurements only for input size '
+                                   '"config" without tiling (input size %r, tile %r): set both gpu_workers and '
+                                   'gpu_mem_budget' % (mo.input_size, mo.tile))
+            try:
+                free, total = probe_device_memory(mo.device)
+                plan = plan_gpu_workers(free, total, mo.kept_thr, self.n_gpu, self.budget_arg)
+            except (InsufficientMemory, RuntimeError, ValueError) as e:
+                self._start_failed('automatic sizing of the GPU workers on %s: %s' % (mo.device, e))
+            self.log('auto-sizing on %s: %s' % (mo.device, plan['text']))
+            self.n_gpu = plan['gpu_workers']
+            self.budget = plan['budget']
+            plan = dict(plan, device=mo.device, time_utc=jobs._utc(time.time()))
+            plan['budget'] = list(plan['budget'])
+            self.auto_sizing = plan
+        if self.max_inflight is None:
+            self.max_inflight = int(self.max_inflight_arg or 2 * (self.n_pre + self.n_gpu + self.n_post))
+        budget_text = self.budget_arg
+        if self.budget is not None and self.budget_arg is None:
+            budget_text = '%dM' % (self.budget[1] // 2 ** 20)
+        if self.settings is not None:
+            self.settings['gpu_workers'] = self.n_gpu
+            self.settings['gpu_mem_budget'] = budget_text
+            self.settings['max_inflight'] = self.max_inflight
+        self.engine_info = dict(self.engine_info, gpu_workers=self.n_gpu, gpu_mem_budget=budget_text,
+                                max_inflight=self.max_inflight, auto_sizing=self.auto_sizing,
+                                settings=self.settings)
 
     def __enter__(self):
         return self.start() if self.state == 'created' else self
@@ -956,8 +1136,9 @@ class Engine:
                     self.task_q.put(None)
                 for p in procs['pre']:
                     p.join(30)
-                for _ in procs['gpu']:
-                    self.pre_q.put(None, timeout=10)
+                for w, _ in enumerate(procs['gpu']):
+                    if w not in self.retired:
+                        self.pre_q.put(None, timeout=10)
                 for p in procs['gpu']:
                     p.join(60)
                 for _ in procs['post']:
@@ -1052,7 +1233,10 @@ class Engine:
                             self.log('job %s %s: %s' % (job.id, job.status, _fmt_counts(job.counts())))
                     self.cond.notify_all()
                 if self.state in ('running', 'stopping') and not self._stopping_workers:
-                    dead = [(r, p.pid, p.exitcode) for r, ps in self.procs.items() for p in ps if not p.is_alive()]
+                    dead = self._dead_workers()
+                    if dead:  # a GPU worker that stopped after out of memory has sent its message before ending
+                        self._drain_stats()
+                        dead = self._dead_workers()
                     if dead and self.state == 'running':
                         self._fail('worker process(es) died: %s' % ', '.join('%s pid %d exit %s' % d for d in dead))
                     elif dead and not self._abandon.is_set():
@@ -1074,8 +1258,60 @@ class Engine:
                 return
             if kind == 'fatal':
                 self._fail('GPU worker %d (pid %d) failed:\n%s' % (wid, pid, info))
+            elif kind == 'oom':
+                self._on_oom(wid, pid, info)
             elif kind in ('stats', 'done'):
                 self.worker_stats[wid] = dict(info, t=time.time(), pid=pid)
+
+    def _dead_workers(self):
+        """Worker processes that ended, without the GPU workers the back-off stopped."""
+        return [(r, p.pid, p.exitcode) for r, ps in self.procs.items() for w, p in enumerate(ps)
+                if not p.is_alive() and not (r == 'gpu' and w in self.retired)]
+
+    def _on_oom(self, wid, pid, info):
+        """Bounded back-off (module docstring): GPU worker wid stopped after out of memory on an image. Called
+        with self.cond held."""
+        rec = info['rec']
+        self.retired.add(wid)
+        left = [w for w in range(len(self.procs['gpu'])) if w not in self.retired]
+        retries = int(rec.get('oom_retries') or 0)
+        mem = {k: (round(v, 1) if isinstance(v, float) else v) for k, v in (info.get('memory') or {}).items()}
+        now = time.time()
+        ev = {'time': now, 'time_utc': jobs._utc(now), 'job': rec.get('job'), 'idx': rec.get('idx'),
+              'image': rec.get('id'), 'path': rec.get('path'), 'gpu_worker': wid, 'pid': pid,
+              'attempt': retries + 1, 'memory': mem, 'mem_cap_MB': info.get('mem_cap_MB'),
+              'device_free_MB_after_release': info.get('device_free_MB_after_release'),
+              'worker_images_done': info.get('n_images'), 'gpu_workers_left': len(left)}
+        numbers = ('allocated %s MB, reserved %s MB, peak reserved %s MB, worker cap %s MB, device free %s MB '
+                   '(after release %s MB)' % (mem.get('allocated_MB'), mem.get('reserved_MB'),
+                                              mem.get('max_reserved_MB'), _r(info.get('mem_cap_MB')),
+                                              mem.get('device_free_MB'), _r(info.get('device_free_MB_after_release'))))
+        if retries >= 1 or not left:
+            why = ('its second out of memory (requeued once already)' if retries >= 1 else
+                   'no GPU worker left')
+            ev['action'] = 'engine failed (%s)' % why
+            self.backoff.append(ev)
+            self.engine_info = dict(self.engine_info, backoff=self.backoff, gpu_workers_active=len(left))
+            self._fail('out of device memory: GPU worker %d (pid %d) on image %s (%s), %s; %s:\n%s' % (
+                wid, pid, rec.get('id'), rec.get('path'), why, numbers, info.get('error')))
+            return
+        ev['action'] = 'worker stopped, image requeued'
+        self.backoff.append(ev)
+        self.engine_info = dict(self.engine_info, backoff=self.backoff, gpu_workers_active=len(left))
+        self.log('BACK-OFF: GPU worker %d (pid %d) out of device memory on image %s (job %s); %s; the worker is '
+                 'stopped (%d GPU worker(s) left, not restarted), the image is requeued once'
+                 % (wid, pid, rec.get('id'), rec.get('job'), numbers, len(left)))
+        job = self.sched.jobs.get(rec.get('job'))
+        if job is not None and not job.final:
+            r = job.records[rec['idx']]
+            r['note'] = 'requeued after out of device memory on GPU worker %d' % wid
+            job.dirty = True
+        if self.state in ('running', 'stopping'):
+            task = {k: rec[k] for k in TASK_KEYS}
+            task['oom_retries'] = retries + 1
+            self.task_q.put(task)
+        for j in self.sched.active():
+            j.dirty = True
 
     def _info(self):
         """engine_info + the GPU workers' last memory statistics (at most ~2 s old)."""
@@ -1168,6 +1404,10 @@ class Engine:
                     'device_free_MB': min(free) if free else None, 'worker_stats': stats,
                     'jobs_active': len(self.sched.active()), 'images_pending': self.sched.n_pending(),
                     'images_inflight': self.inflight, 'accepting': self._accepting}
+
+
+def _r(v):
+    return None if v is None else round(v)
 
 
 def _fmt_counts(c):
