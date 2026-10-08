@@ -27,8 +27,8 @@ Linux or WSL2 with an AMD GPU (ROCm 7.2 in `/opt/rocm`), `git` and [uv](https://
 ```bash
 git clone https://github.com/jehelmich/LineFormer.git ~/LineFormer && cd ~/LineFormer
 VENV=$HOME/lineformer bash rocm/install_rocm.sh       # downloads torch; nothing is compiled
-# download iter_3000.pth from the authors' link under "Inference" below
-$HOME/lineformer/bin/lineformer --ckpt iter_3000.pth --out /tmp/lf_demo demo/PMC5959982___3_HTML.jpg
+# download iter_3000.pth from the authors' link under "Inference" below into ~/LineFormer
+$HOME/lineformer/bin/lineformer --out /tmp/lf_demo demo/PMC5959982___3_HTML.jpg
 # expect /tmp/lf_demo/PMC5959982___3_HTML.json with 3 lines of 621 points
 ```
 
@@ -37,21 +37,23 @@ mmdetection are installed from the checkout. CPU only or NVIDIA: the same script
 (`rocm/INSTALL.md`; NVIDIA not tested by this fork). Many images:
 
 ```bash
-lineformer batch --ckpt iter_3000.pth --list images.txt --out out/ --gpu-workers 2   # one job, all cores
-lineformer serve --ckpt iter_3000.pth --port 8775 --gpu-workers 2                    # a server that owns the GPU
+lineformer batch --list images.txt --out out/ [--masks]   # one job; GPU workers sized from the free memory
+lineformer serve --port 8775                              # a server that owns the GPU
 ```
 
-Defaults: `--device auto` (GPU if PyTorch sees one, else CPU), kept-queries mode on at 0.3 (`--all-queries` for all
-100 instances per image, as upstream). `--input-size native` and `--tile` are experimental (see
-[docs/VALIDATION.md](docs/VALIDATION.md#input-scale)). Tests: `python -m pytest` or `python tests/run_all.py`;
-lint: `ruff check` (the fork's own files only).
+Options of every form: `--threshold` (default 0.3), `--masks`, `--force`, `--cpu` (default: the GPU if PyTorch sees
+one); everything else (model config, workers, threads, memory budget, ...) goes into a settings file, `--settings
+FILE.toml` ([lineformer.example.toml](lineformer.example.toml) lists every key with its default). The checkpoint is
+found at `--ckpt FILE`, `$LINEFORMER_CKPT`, `<checkout>/iter_3000.pth` or `~/.cache/lineformer/iter_3000.pth`.
+Tests: `python -m pytest` or `python tests/run_all.py`; lint: `ruff check` (the fork's own files only).
 
 `lineformer batch` and `lineformer serve` write the lines and instances in a deterministic geometric order (the
 model's own order differs between CPU and GPU): lines by leftmost x, then mean y, then score; line *i* is instance
 *i* of `<id>.instances.npz` / `<id>.masks.npz`, and the instances without a line follow (details in
 `lineformer_jobs.py`). `infer.get_dataseries` and the single-process `lineformer` keep the model's order, as
-upstream. Every job writes a manifest `<out>/job.json` (fork version and git commit, package versions, options,
-per-image status and output sha256, start and end times, failures).
+upstream. Every job writes a manifest `<out>/job.json` (fork version and git commit, package versions, the
+effective settings, per-image status and output sha256, start and end times, failures). Out of GPU memory on an
+image stops that GPU worker and gives the image once to a remaining worker; a second out of memory fails the run.
 
 * [rocm/INSTALL.md](rocm/INSTALL.md): install, update, environment check, use (batch, serve, client, Python)
 * [docs/VALIDATION.md](docs/VALIDATION.md): how equivalence and speed were measured, and the limits

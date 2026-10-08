@@ -7,10 +7,10 @@ the kept-queries mode and through the job engine? And how fast is it?
 
 ## Environment
 
-Current stack (`rocm/install_rocm.sh`, unreleased): Python 3.13.16, torch 2.14.1+rocm7.2, the pure-Python mmcv
+Current stack (`rocm/install_rocm.sh`, v0.3.0): Python 3.13.16, torch 2.14.1+rocm7.2, the pure-Python mmcv
 1.7.2 subset in `third_party/mmcv` (no compiled ops), mmdet 2.28.2 (vendored), numpy 2.5.2, opencv-python
 5.0.0.93, scipy 1.18.1, scikit-image 0.26.0, matplotlib 3.11.2; checked in
-[Without compiled mmcv, current dependencies](#without-compiled-mmcv-current-dependencies-unreleased). The other
+[Without compiled mmcv, current dependencies](#without-compiled-mmcv-current-dependencies-v030). The other
 measurements on this page were made with the v0.2.0 stack:
 
 AMD Radeon RX 7900 XTX (gfx1100, 24 GB), ROCm 7.2.0, WSL2 Ubuntu 24.04. Python 3.11.17, torch 2.14.1+rocm7.2,
@@ -52,10 +52,10 @@ mode and two GPU workers gives masks bit-identical to the single-process kept ru
 (`tests/integration/serve_check.py`). What was re-checked on the release commit is listed under
 [Release check](#release-check-v020).
 
-Demo image, expected output: 3 lines of 621 points each (`lineformer --ckpt iter_3000.pth --out out/
-demo/PMC5959982___3_HTML.jpg`), on CPU and GPU.
+Demo image, expected output: 3 lines of 621 points each (`lineformer --out out/ demo/PMC5959982___3_HTML.jpg`,
+checkpoint found by the lookup of `lineformer_cli.py`), on CPU and GPU.
 
-### Without compiled mmcv (unreleased)
+### Without compiled mmcv (v0.3.0)
 
 `third_party/mmcv` (the pure-Python subset of mmcv 1.7.2, no `mmcv._ext`) replaces mmcv-full 1.7.2 built with CPU
 ops; every other package version is the same. Bit-identity against the mmcv-full stack, all 72 images unless
@@ -74,7 +74,7 @@ an effect of the subset; on CPU, which is deterministic, everything is bit-ident
 into compiled mmcv code on CPU and GPU, before (mmcv-full) and after; on the GPU the only stand-in that runs is
 `get_compiling_cuda_version`, called by `msda_compat`'s `auto` probe, which then picks `pytorch`.
 
-### Without compiled mmcv, current dependencies (unreleased)
+### Without compiled mmcv, current dependencies (v0.3.0)
 
 The current stack (see [Environment](#environment): Python 3.13, numpy 2.5.2, OpenCV 5.0.0.93, scipy 1.18.1,
 scikit-image 0.26.0, matplotlib 3.11.2, the same torch 2.14.1) with the mmcv subset. Against the reference A, with
@@ -100,7 +100,7 @@ GPU only the scores move, within the GPU's run-to-run variation. Nothing had to 
 re-measured: the machine was shared with other GPU and CPU work during these runs; interleaved runs of the two
 stacks under the same load showed no difference beyond that noise.
 
-## Threshold sensitivity (unreleased)
+## Threshold sensitivity (v0.3.0)
 
 The acceptance compares instances with score >= 0.3, but no instance of the reference lies near 0.3 (lowest kept
 0.3214, highest dropped 0.2288), so "the same instances" was never tested at its own threshold. The runs that
@@ -179,17 +179,17 @@ post-processing-bound (2.0 images/s). `tools/benchmark.py` measures the engine o
 
 * No instance in the set has a score near the 0.3 threshold, so the set does not test how the stacks decide such
   borderline cases at 0.3; at lower thresholds (0.05-0.2), where such instances exist, no instance flipped
-  ([Threshold sensitivity](#threshold-sensitivity-unreleased)).
+  ([Threshold sensitivity](#threshold-sensitivity-v030)).
 * The model's order of instances, and so of lines, differs between CPU and GPU (`topk(sorted=False)` in mmdet).
-  The engine (`lineformer batch` / `serve`) sorts them geometrically (since the unreleased version, see
-  [Line order](#line-order-unreleased)); `infer.get_dataseries` and the single-process `lineformer` do not: match
+  The engine (`lineformer batch` / `serve`) sorts them geometrically (since v0.3.0, see
+  [Line order](#line-order-v030)); `infer.get_dataseries` and the single-process `lineformer` do not: match
   their lines by position, not by index.
 * All results are in-sample, on one GPU (RX 7900 XTX), ROCm 7.2 and WSL2. Native Linux (without the WSL
   `libhsa-runtime64.so` swap the install script makes) and NVIDIA GPUs are untested.
 * The kept-queries mode drops instances whose class score is below its threshold; code that reads low-scoring
-  instances needs `--all-queries` (or a lower `--kept-thr`).
+  instances needs `all_queries = true` in the settings file (or a lower `--threshold`).
 
-## Line order (unreleased)
+## Line order (v0.3.0)
 
 The engine sorts lines by (leftmost x, mean y, -score) and puts line *i* at instance *i* (`lineformer_jobs.py`,
 "Order"). Measured on the lines of the 72 test images before the change, reference A (CPU) against the kept GPU
@@ -198,46 +198,73 @@ key value moved between CPU and GPU on any line. The leftmost x ties exactly bet
 images with several lines (lines starting at the axis); the mean y then decides, and its smallest gap between two
 lines of an image is 3.2 px. A swap would need a line's leftmost x or mean y to move past another line's between
 runs; this set has no such case, so the margin of the key is not stressed by it. The engine with the order, on CPU
-and on the GPU: see [Release validation](#release-validation-v030-unreleased), item 3.
+and on the GPU: see [Release validation](#release-validation-v030), item 3.
 
 ## Input scale
 
-`--input-size native` and `--tile` are experimental. In an in-sample test on dense chart grids, native-resolution
+`input_size = "native"` and `tile` (settings file; `--input-size`, `--tile` before v0.3.0) are experimental. In an in-sample test on dense chart grids, native-resolution
 input made the model segment grid lines as data lines (precision 0.97 -> ~0.2). The model was trained at ~512 px
 per chart; results are best near that scale, which the default (`config`, fit 512 x 512) keeps.
 
-## Release validation (v0.3.0, unreleased)
+## Release validation (v0.3.0)
 
-Run on the code of the release candidate (commit `c1efc5e`; the commits after it change documentation only), the
-current stack of [Environment](#environment), on the machine above while it was shared (see item 4):
+Two runs, both on the current stack of [Environment](#environment), on the machine above while it was shared:
 
-1. Tests: `python -m pytest` 64 passed, 0 skipped; `python tests/run_all.py` 64 passed, 0 failed, 0 skipped;
-   `ruff check` (ruff 0.16.10) clean.
-2. `lineformer batch` with the command-line defaults (device auto -> cuda:0, kept 0.3), 2 GPU workers,
-   `--gpu-mem-budget 3G`, `--instances --masks`, on the 72 images -> `to_harness.py` -> `compare.py`:
+* run R1 on commit `c1efc5e` (the engine before the small command line): items 3 and 4;
+* run R2 on commit `6463bcb` (the small command line, automatic sizing and the out-of-memory back-off; the commits
+  after it change documentation only): items 1, 2, 5, 6 and 7. The manifests say `git_dirty` true: the working
+  tree held the uncommitted version and documentation edits of the release.
+
+1. Tests (R2): `python -m pytest` 80 passed, 0 skipped; `python tests/run_all.py` 80 passed, 0 failed, 0 skipped;
+   `ruff check` (ruff 0.16.10) clean. Among them the back-off by fault injection without a GPU
+   (`tests/test_autosize_backoff.py`: one out of memory -> the image requeued, the job done with one worker fewer
+   and the event in the manifest; the same image twice -> failed; the last worker -> failed; `serve
+   --exit-on-failure` -> exit code 2) and the sizing rule with mocked free memory (2, 1 and 0 workers fit).
+2. `lineformer batch --list <72 images> --out ... --masks` (R2): no other option, the checkpoint found through
+   `LINEFORMER_CKPT`, device auto -> cuda:0, kept 0.3, GPU workers sized automatically (item 5: 1 worker) ->
+   `to_harness.py` -> `compare.py`:
 
    | against | PASS | min mask IoU | max \|dscore\| | lines identical (in order) | points within 1 px |
    |---|---|---|---|---|---|
    | reference A (CPU, original stack) | 72/72 | 0.99995 | 1.1e-5 | 48/72 images | all |
-   | the earlier kept GPU run | 72/72 | 1.0 | 1.3e-6 | 45/72 images | all |
+   | the earlier kept GPU run | 72/72 | 1.0 | 7.5e-7 | 45/72 images | all |
 
-   Order-insensitive, against the earlier kept GPU run: masks identical on 72/72 images, box coordinates identical
-   on 72/72, scores identical on 51/72 (max difference 1.3e-6, the GPU's run-to-run variation), lines identical as
-   sets on 72/72. `compare.py` counts identical lines in order; the references keep the model's order, so that count
-   now measures the order: 48/72 against A (44/72 before the geometric order) and 45/72 against the GPU run. The
-   manifest names the commit (`git_dirty` false) and holds an output sha256 for every image.
-3. Line order, CPU against GPU: the same engine on CPU (`--device cpu`, kept 0.3) on 8 of the images (the 7
-   windows with 3-4 lines and the demo, 25 lines) against the GPU run of item 2: lines identical and in the same
+   Against the engine run of R1 (2 GPU workers, `--gpu-mem-budget 3G --instances --masks`; the same code path apart
+   from the command line), output file by output file: the `lines` of every `<id>.json` identical on 72/72 images
+   (byte for byte as JSON), masks identical on 72/72, box coordinates and labels identical on 72/72, scores identical
+   on 52/72 (max difference 1.4e-6, the GPU's run-to-run variation). R1 itself against the same references:
+   72/72 against A (min IoU 0.99995, max |dscore| 1.1e-5, lines in order 48/72) and against the earlier kept GPU
+   run (min IoU 1.0, max |dscore| 1.3e-6, 45/72; order-insensitive: masks and boxes identical on 72/72, scores on
+   51/72, lines identical as sets on 72/72). `compare.py` counts identical lines in order; the references keep the
+   model's order, so that count measures the order: 48/72 against A (44/72 before the geometric order). The
+   manifest names the commit and holds an output sha256 for every image.
+3. Line order, CPU against GPU (R1): the same engine on CPU (`--device cpu`, kept 0.3) on 8 of the images (the 7
+   windows with 3-4 lines and the demo, 25 lines) against the GPU run of R1: lines identical and in the same
    order on 8/8 images, instances in the same order on 8/8 (masks identical position by position, scores within
    7.2e-6). In the model's order the lines of these 8 images came in different orders on CPU (A) and GPU (8/8).
-4. Throughput, `tools/benchmark.py` on the 72 images (kept 0.3, `--gpu-mem-budget 3G`, 8 pre-processing workers,
-   3 timed passes): 1 GPU worker 7.29 / 1.47 / 3.67 images/s, 2 GPU workers 6.05 / 6.16 / 5.57 images/s; peak
-   allocated 479-480 MB, reserved 766-834 MB per worker. **Not a clean measurement**: no other process ran in WSL,
-   but Windows-side GPU work kept the host CPU at 95-100 % and the GPU busy (engine utilisation summed over engines
-   48-307 %, 17.3-20.9 GB of 24 GB device memory in use by others); the pre-processing median was 0.6-1.2 s per
-   image instead of ~0.2 s, so the rate measures the load, not the engine. The [Speed](#speed) table (idle machine,
-   v0.2.0 stack) stays the reference; this version adds per image a sort of a few lines and a sha256 over the
-   written files.
+4. Throughput (R1), `tools/benchmark.py` on the 72 images (kept 0.3, `--gpu-mem-budget 3G`, 8 pre-processing
+   workers, 3 timed passes): 1 GPU worker 7.29 / 1.47 / 3.67 images/s, 2 GPU workers 6.05 / 6.16 / 5.57 images/s;
+   peak allocated 479-480 MB, reserved 766-834 MB per worker. **Not a clean measurement**: no other process ran in
+   WSL, but Windows-side GPU work kept the host CPU at 95-100 % and the GPU busy (engine utilisation summed over
+   engines 48-307 %, 17.3-20.9 GB of 24 GB device memory in use by others); the pre-processing median was 0.6-1.2 s
+   per image instead of ~0.2 s, so the rate measures the load, not the engine. The [Speed](#speed) table (idle
+   machine, v0.2.0 stack) stays the reference; this version adds per image a sort of a few lines and a sha256 over
+   the written files. R2 was not timed (item 2 ran at 2.7 images/s with one GPU worker under a load average of
+   9-13).
+5. Automatic sizing on the real GPU (R2, item 2): other processes held ~18.5 GB of the 24 GB (Windows counter
+   before the run); the engine measured `device free 6049 MB of 24517 MB, headroom for other processes 2452 MB,
+   usable 3597 MB, need per GPU worker 2358 MB (kept-queries mode) -> 1 GPU worker(s), memory budget 3597 MB`.
+   The worker peaked at 479 MB allocated, 654 MB reserved over the 72 images. In a 6-image check before it, with
+   7304 MB free, the same rule gave 2 workers (usable 4852 MB); the device's free memory then fell by ~1.6 GB with
+   both workers loaded (~0.4 GB reserved each), within the 2 x 2358 MB the rule set aside.
+6. Deprecated flags (R2): `lineformer batch --gpu-workers 2 --gpu-mem-budget 3G --kept-thr 0.3 --instances` on 8 of
+   the images ran with 2 GPU workers and a 3G budget (no automatic sizing; the manifest names the flags as the
+   sources), printed one deprecation line per flag, and gave the outputs of item 2 for these images: `lines`
+   identical on 8/8, box coordinates and labels identical on 8/8, scores within 1.2e-7; `.instances.npz` only, no
+   masks, as `--instances` wrote before.
+7. CPU (R2): `lineformer batch --cpu --masks` on 3 of the images of item 3: lines, masks, boxes, labels and scores
+   identical to the CPU run of R1 on 3/3 (bit for bit); the single process `lineformer --cpu` on the demo image:
+   3 lines of 621 points.
 
 ## Release check (v0.2.0)
 

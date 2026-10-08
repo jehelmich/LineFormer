@@ -2,9 +2,49 @@
 <!-- Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer) -->
 # Changelog
 
-## Unreleased
+## v0.3.0 (2026-10-08)
+
+### Command line
+- A small interface: `lineformer IMAGE... | --list FILE --out DIR [--threshold T] [--masks] [--force] [--cpu]
+  [--settings FILE.toml]`, the same for `lineformer batch`, and `lineformer serve [--port] [--exit-on-failure]
+  [--threshold] [--masks] [--cpu] [--settings]`. `--help` shows only these.
+- `--threshold` is the former `--kept-thr` (default 0.3, same semantics: the class-score threshold of the
+  kept-queries mode; a line still needs a final score > 0.3). `--masks` of batch / serve now also writes
+  `<id>.instances.npz` (what `--instances` wrote). `--cpu` replaces `--device cpu`; the default stays automatic.
+  `serve --masks` makes every job write the masks and instances.
+- Settings file (`--settings FILE.toml`, read with `tomllib`; `lineformer.example.toml` lists every key with its
+  default): `config`, `input_size`, `tile`, `tile_overlap` (both EXPERIMENTAL), `all_queries` (validation only),
+  `msda` (debugging), `ids`, `gpu_workers`, `gpu_mem_budget`, `pre_workers`, `post_workers`, `pre_threads`,
+  `post_threads`, `gpu_threads`, `max_inflight`, `progress_s`. Unknown keys and bad values are errors. The
+  effective settings (sources included, after the automatic sizing) are in each job manifest (`engine.settings`).
+- Deprecated, still accepted in this version with their values applied, a one-line warning naming the settings key
+  and hidden from `--help`: `--config`, `--device`, `--msda`, `--all-queries`, `--kept-only` (no effect),
+  `--kept-thr`, `--input-size`, `--tile`, `--tile-overlap`, `--ids`, `--instances`, `--gpu-workers`,
+  `--gpu-mem-budget`, `--pre-workers`, `--post-workers`, `--pre-threads`, `--post-threads`, `--gpu-threads`,
+  `--max-inflight`, `--progress-s`. A flag and the settings file that disagree are an error. `serve`'s `--host`,
+  `--drain-timeout`, `--ready-file` and `--verbose` are kept (not shown in `--help`, not deprecated).
+- Checkpoint lookup: `--ckpt` is optional (kept, not shown in `--help`); else `$LINEFORMER_CKPT`, else
+  `<fork root>/iter_3000.pth`, else `~/.cache/lineformer/iter_3000.pth`; none found is an error that names the
+  paths searched and the download link. A path given by the flag or the variable must exist. The path, its source
+  and (as before) its sha256 are in the manifest.
+- Two images that map to one id stop `lineformer` / `lineformer batch` before anything runs (exit code 2), naming
+  the clash and the `ids = "parent_stem"` setting. Before, batch failed the second image and went on. The single
+  process reads `<id><TAB><path>` list lines and writes `<id>.json` like batch.
 
 ### Engine
+- Automatic sizing of the GPU workers (`Engine(gpu_workers=None, gpu_mem_budget=None)`, the command line's
+  default; the Python defaults stay 1 worker, 0.85): at start the free device memory is measured
+  (`torch.cuda.mem_get_info`, in a subprocess), max(2 GiB, 10 %) is left to other processes, and
+  min(2, usable / need) workers start with the usable memory as their budget; need per worker = 1.5 x (measured
+  peak + runtime context) = 2358 MB in the kept mode, 19500 MB with all queries (constants in
+  `lineformer_engine.py` with their sources). No worker fits: the engine fails with the numbers. Only input size
+  `config` without tiling is sized automatically. The decision is logged and in the manifest (`auto_sizing`).
+- Bounded back-off on out of device memory (replaces "out of memory ends the engine"): the GPU worker that hit it
+  stops (not restarted; the worker count only goes down) and the image is requeued once to a remaining worker. A
+  second out of memory of the same image, or one on the last GPU worker, fails the engine as before (message with
+  the memory numbers, jobs "failed", batch exit code 2, `serve --exit-on-failure` exits 2). Every event (time,
+  image, worker, memory) is logged and in the manifest (`engine.backoff`); `gpu_workers_active` counts the workers
+  left. Tested by fault injection without a GPU (`tests/test_autosize_backoff.py`).
 - Deterministic output order: `lineformer batch` / `serve` sort the lines and instances of each image by a
   geometric key (leftmost x, mean y, then score; line *i* = instance *i*, the instances without a line after them)
   instead of the model's order, which differs between CPU and GPU. Each `<id>.json` says `"order": "geometric"`.
@@ -44,6 +84,10 @@
   within the GPU's run-to-run variation; PASS 72/72 against the original stack (`docs/VALIDATION.md`).
 
 ### Tests
+- `tests/test_cli.py` (help, settings file, deprecated flags, threshold, checkpoint lookup, id clash) and
+  `tests/test_autosize_backoff.py` (sizing arithmetic with mocked free memory; back-off by fault injection in real
+  worker processes on the CPU: one out of memory -> requeued and done with one worker fewer, the same image twice ->
+  failed, the last worker -> failed, `serve --exit-on-failure` -> 2).
 - ruff (`pyproject.toml` `[tool.ruff]`, rules E, F, W, line length 120) on the fork's own files only (those with
   the SPDX header; upstream files and the vendored `mmdetection/`, `third_party/` are not linted); a `lint` job in
   CI. Findings fixed without behaviour change (an unused variable in `scale_compat.py`, long lines, an ambiguous
