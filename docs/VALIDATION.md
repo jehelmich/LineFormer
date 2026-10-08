@@ -121,12 +121,24 @@ post-processing-bound (2.0 images/s). `tools/benchmark.py` measures the engine o
 
 * No instance in the set has a score near the 0.3 threshold, so the set does not test how the stacks decide such
   borderline cases.
-* The order of instances, and so of lines, differs between CPU and GPU (`topk(sorted=False)` in mmdet): match lines
-  by position, not by index.
+* The model's order of instances, and so of lines, differs between CPU and GPU (`topk(sorted=False)` in mmdet).
+  The engine (`lineformer batch` / `serve`) sorts them geometrically (since the unreleased version, see
+  [Line order](#line-order-unreleased)); `infer.get_dataseries` and the single-process `lineformer` do not: match
+  their lines by position, not by index.
 * All results are in-sample, on one GPU (RX 7900 XTX), ROCm 7.2 and WSL2. Native Linux (without the WSL
   `libhsa-runtime64.so` swap the install script makes) and NVIDIA GPUs are untested.
 * The kept-queries mode drops instances whose class score is below its threshold; code that reads low-scoring
   instances needs `--all-queries` (or a lower `--kept-thr`).
+
+## Line order (unreleased)
+
+The engine sorts lines by (leftmost x, mean y, -score) and puts line *i* at instance *i* (`lineformer_jobs.py`,
+"Order"). Measured on the lines of the 72 test images before the change, reference A (CPU) against the kept GPU
+run: in the model's order the lines of 44 of 72 images come in the same order; sorted by the key, 72 of 72. No
+key value moved between CPU and GPU on any line. The leftmost x ties exactly between two lines in 11 of the 34
+images with several lines (lines starting at the axis); the mean y then decides, and its smallest gap between two
+lines of an image is 3.2 px. A swap would need a line's leftmost x or mean y to move past another line's between
+runs; this set has no such case, so the margin of the key is not stressed by it.
 
 ## Input scale
 

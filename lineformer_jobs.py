@@ -20,13 +20,22 @@ Image ids (the output file names):
 
 Outputs per image in the output directory (each written atomically: temp file + rename, the JSON last):
   <id>.json            {"id", "image", "image_sha256", "shape", "lines": [[{"x", "y"}, ...], ...], "n_lines",
-                       "n_instances", "outputs", "fingerprint", "job", "timings"}; lines as infer.get_dataseries
-                       (instances with score > 0.3); line order is not meaningful
+                       "n_instances", "n_instances_gt_line_thr", "order", "outputs", "fingerprint", "job",
+                       "timings"}; lines as infer.get_dataseries (instances with score > 0.3), in the order below
   <id>.instances.npz   (option "instances") boxes (N, 5) float32 x1 y1 x2 y2 score, labels (N,) int64: every
                        instance the model returned (all 100 queries, or only the kept ones in kept-queries mode)
   <id>.masks.npz       (option "masks") masks_packed = np.packbits(masks.reshape(-1)), mask_shape = (N, H, W):
                        the masks of the same N instances, in the same order
   job.json             the manifest of the last job that wrote into the directory
+
+Order ("order": "geometric"): the model returns its instances in an order that differs between CPU and GPU
+(mmdet's unsorted top-k), so the engine sorts them. Lines are sorted by (leftmost x of the line's points, mean y
+of its points, -score of its instance); line i is instance i of the .instances.npz / .masks.npz, and the instances
+without a line (score <= 0.3) follow, sorted by (box x1, box centre y, -score). The key does not use the score
+unless the geometry ties exactly, so GPU score noise (~1e-6) does not reorder; two lines can only swap if their
+leftmost x or mean y moves across the other's between runs (on the 72-image test set no key moved between CPU and
+GPU). Outputs of an engine before this order have no "order" key and the model's order; skip-if-done still accepts
+them (the order is not in the fingerprint). infer.get_dataseries itself keeps the model's order (upstream API).
 
 Skip-if-done (unless force): an image is skipped when <id>.json exists, names the same image path, has the same
 fingerprint (engine version, checkpoint and config sha256, input size, kept threshold, tiling) and the requested
@@ -48,6 +57,7 @@ import time
 from pathlib import Path
 
 ENGINE_VERSION = '1'
+ORDER = 'geometric'  # the "order" of <id>.json: lines and instances sorted as described in the module docstring
 MANIFEST = 'job.json'
 ID_SCHEMES = ('stem', 'parent_stem')
 OUTPUT_KINDS = ('instances', 'masks')

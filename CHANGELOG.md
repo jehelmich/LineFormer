@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+### Engine
+- Deterministic output order: `lineformer batch` / `serve` sort the lines and instances of each image by a
+  geometric key (leftmost x, mean y, then score; line *i* = instance *i*, the instances without a line after them)
+  instead of the model's order, which differs between CPU and GPU. Each `<id>.json` says `"order": "geometric"`.
+  The order is not part of the skip-if-done fingerprint: outputs of earlier engines (model order, no `"order"`)
+  are still skipped as done. `infer.get_dataseries` is unchanged.
+
 ### Compatibility
 - No compiler needed: `third_party/mmcv` vendors the pure-Python part of mmcv 1.7.2 that inference loads (148
   unchanged modules, ~0.9 MB of source; `NOTICE.md` lists every change). `mmcv.ops` keeps the real

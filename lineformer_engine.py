@@ -16,7 +16,11 @@ Pipeline (the per-image maths of infer.get_dataseries, not re-implemented):
   GPU workers   N processes, each with its own model: collate + forward (the second half of inference_detector);
                 masks go to the post workers through POSIX shared memory;
   post workers  infer.get_dataseries with the forward swapped for this result (lines: instances with score > 0.3),
-                tiling.merge_instances for tiled images, then the output files (lineformer_jobs.py lists them).
+                tiling.merge_instances for tiled images, then the output files (lineformer_jobs.py lists them),
+                with lines and instances in a deterministic geometric order (instance_order; lineformer_jobs.py
+                "Order"): lines by (leftmost x, mean y, -score), line i = instance i, the instances without a
+                line after them by (box x1, box centre y, -score). The model's own order differs between CPU and
+                GPU; infer.get_dataseries is not changed.
 The main process holds no model and never initialises the GPU runtime; it feeds images (bounded number in
 flight), collects results and writes the manifests (<out>/job.json).
 
@@ -51,6 +55,7 @@ Failure rules:
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import platform
 import queue as queue_mod
@@ -164,6 +169,36 @@ def dataseries_from_result(infer, result):
         return infer.get_dataseries(None, to_clean=False, return_masks=True)
     finally:
         infer.do_instance = orig
+
+
+def line_sort_key(line, score):
+    """Order key of one line: (leftmost x, mean y of its points, -score of its instance). Empty lines last."""
+    if not line:
+        return (math.inf, math.inf, -float(score))
+    return (min(p['x'] for p in line), sum(p['y'] for p in line) / len(line), -float(score))
+
+
+def box_sort_key(box):
+    """Order key of an instance without a line: (box x1, box centre y, -score)."""
+    return (float(box[0]), 0.5 * (float(box[1]) + float(box[3])), -float(box[4]))
+
+
+def instance_order(boxes, labels, lines, line_thr=LINE_THR):
+    """The output order (see ORDER in the module docstring) -> (instance permutation, line permutation).
+
+    boxes (N, 5), labels (N,) as split_result gives them, lines as infer.get_dataseries returned them for the same
+    result (one line per class-0 instance with score > line_thr, in instance order). The instances behind the lines
+    come first, in line order; the others follow by box_sort_key. Exact ties keep the model's order."""
+    import numpy as np
+    boxes = np.asarray(boxes).reshape(-1, 5)
+    labels = np.asarray(labels).reshape(-1)
+    line_idx = [int(i) for i in np.nonzero((boxes[:, 4] > line_thr) & (labels == 0))[0]]
+    if len(line_idx) != len(lines):
+        raise RuntimeError('%d lines for %d class-0 instances with score > %g' % (len(lines), len(line_idx), line_thr))
+    lperm = sorted(range(len(lines)), key=lambda k: line_sort_key(lines[k], boxes[line_idx[k], 4]) + (k,))
+    taken = set(line_idx)
+    rest = sorted((i for i in range(len(boxes)) if i not in taken), key=lambda i: box_sort_key(boxes[i]) + (i,))
+    return [line_idx[k] for k in lperm] + rest, lperm
 
 
 def ds_hashes(ds):
@@ -596,12 +631,20 @@ def _savez_atomic(path, **arrays):
 
 
 def write_outputs(infer, rec, result, tile_info=None):
-    """Lines (+ optional instances / masks) of one image -> files; the JSON last (it marks the image done)."""
+    """Lines (+ optional instances / masks) of one image -> files, in the output order (ORDER); the JSON is
+    returned, not written: the caller writes it last (it marks the image done). -> (json path, json object)."""
     import numpy as np
     boxes, labels, masks = split_result(result)
     sel = boxes[:, 4] > LINE_THR
     if any(s and m is None for s, m in zip(sel.tolist(), masks)):
         raise RuntimeError('a mask above the line threshold was not transferred')
+    t = time.time()
+    ds, _ = dataseries_from_result(infer, result)
+    rec['t_lines_s'] = time.time() - t
+    perm, lperm = instance_order(boxes, labels, ds)
+    perm = np.asarray(perm, dtype=np.int64)
+    boxes, labels, masks, sel = boxes[perm], labels[perm], [masks[i] for i in perm], sel[perm]
+    ds = [ds[k] for k in lperm]
     H, W = rec['shape'][:2]
     paths = jobs.output_paths(rec['out'], rec['id'])
     written = []
@@ -621,10 +664,7 @@ def write_outputs(infer, rec, result, tile_info=None):
     for k in jobs.OUTPUT_KINDS:  # an older run's file of a kind not asked for now would not match this JSON
         if k not in written and paths[k].exists():
             os.remove(str(paths[k]))
-    t = time.time()
-    ds, _ = dataseries_from_result(infer, result)
-    rec['t_lines_s'] = time.time() - t
-    lines = [[{'x': float(q['x']), 'y': float(q['y'])} for q in ln] for ln in ds]
+    lines =[[{'x': float(q['x']), 'y': float(q['y'])} for q in ln] for ln in ds]
     rec['n_lines'] = len(lines)
     rec['n_instances'] = int(len(boxes))
     timings = {'pre_s': rec['t_pre_end'] - rec['t_pre_start'],
@@ -632,7 +672,8 @@ def write_outputs(infer, rec, result, tile_info=None):
                'post_s': None}  # filled by the post worker
     obj = {'id': rec['id'], 'image': rec['path'], 'image_sha256': rec['image_sha256'], 'shape': rec['shape'],
            'lines': lines, 'n_lines': len(lines), 'n_instances': rec['n_instances'],
-           'n_instances_gt_line_thr': int(sel.sum()), 'outputs': written, 'fingerprint': rec['fingerprint'],
+           'n_instances_gt_line_thr': int(sel.sum()), 'order': jobs.ORDER, 'outputs': written,
+           'fingerprint': rec['fingerprint'],
            'job': rec['job'], 'timings': timings}
     if tile_info is not None:
         obj['tiles'] = tile_info
@@ -742,7 +783,7 @@ class Engine:
         self.engine_info = {
             'model_options': asdict(mo), 'fingerprint': self.fingerprint, 'versions': self.versions,
             'device': mo.device, 'msda_path': None, 'kept_thr': mo.kept_thr, 'input_size': mo.input_size,
-            'tile': self.fingerprint['tile'], 'line_thr': LINE_THR, 'gpu_workers': self.n_gpu,
+            'tile': self.fingerprint['tile'], 'line_thr': LINE_THR, 'order': jobs.ORDER, 'gpu_workers': self.n_gpu,
             'pre_workers': self.n_pre, 'post_workers': self.n_post, 'gpu_mem_budget': self.budget_arg,
             'threads': self.threads, 'max_inflight': self.max_inflight, 'workers': None, 'pids': None}
         self.state = 'prepared'

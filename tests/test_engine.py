@@ -255,6 +255,33 @@ def test_tiled_split_equals_run_tiled():
     assert all(np.array_equal(a, b) for a, b in zip(rm, em))
 
 
+def test_instance_order():
+    # instances in model order: a line starting at x 20 (mean y 80), a low-score instance, a line starting at x 20
+    # (mean y 30), a line starting at x 5; scores differ from the geometric order on purpose
+    boxes = np.array([[20, 78, 180, 82, 0.95], [0, 0, 10, 10, 0.2], [20, 28, 180, 32, 0.6],
+                      [5, 50, 100, 60, 0.31]], np.float32)
+    labels = np.zeros(4, np.int64)
+    line = lambda x0, x1, y: [{'x': x, 'y': y} for x in range(x0, x1)]  # noqa: E731
+    lines = [line(20, 181, 80), line(20, 181, 30), line(5, 101, 55)]
+    perm, lperm = engine.instance_order(boxes, labels, lines)
+    assert perm == [3, 2, 0, 1] and lperm == [2, 1, 0]
+    # the same instances in any other model order give the same output order
+    rng = np.random.default_rng(0)
+    for _ in range(10):
+        p = rng.permutation(4)
+        lines_p = [lines[[0, None, 1, 2][i]] for i in p if i != 1]
+        perm_p, _ = engine.instance_order(boxes[p], labels[p], lines_p)
+        assert p[perm_p].tolist() == perm
+    # exact geometric ties: the score decides (higher first), not the model order
+    tied = np.array([[0, 0, 9, 9, 0.5], [0, 0, 9, 9, 0.7]], np.float32)
+    assert engine.instance_order(tied, np.zeros(2, np.int64), [line(0, 9, 4), line(0, 9, 4)])[0] == [1, 0]
+    assert engine.instance_order(tied, np.zeros(2, np.int64), [], line_thr=0.9)[0] == [1, 0]
+    # an empty line sorts last among the lines; a line count that does not fit the instances fails loud
+    assert engine.instance_order(tied, np.zeros(2, np.int64), [[], line(3, 9, 4)])[0] == [1, 0]
+    _raises(RuntimeError, engine.instance_order, boxes, labels, lines[:2])
+    assert engine.instance_order(np.zeros((0, 5), np.float32), np.zeros(0, np.int64), []) == ([], [])
+
+
 def test_split_result():
     b = np.array([[0, 0, 1, 1, 0.5]], np.float32)
     boxes, labels, masks = engine.split_result(([b], [[None]]))

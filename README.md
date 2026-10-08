@@ -45,6 +45,12 @@ Defaults: `--device auto` (GPU if PyTorch sees one, else CPU), kept-queries mode
 100 instances per image, as upstream). `--input-size native` and `--tile` are experimental (see
 [docs/VALIDATION.md](docs/VALIDATION.md#input-scale)). Tests: `python -m pytest` or `python tests/run_all.py`.
 
+`lineformer batch` and `lineformer serve` write the lines and instances in a deterministic geometric order (the
+model's own order differs between CPU and GPU): lines by leftmost x, then mean y, then score; line *i* is instance
+*i* of `<id>.instances.npz` / `<id>.masks.npz`, and the instances without a line follow (details in
+`lineformer_jobs.py`). `infer.get_dataseries` and the single-process `lineformer` keep the model's order, as
+upstream.
+
 * [rocm/INSTALL.md](rocm/INSTALL.md): install, update, environment check, use (batch, serve, client, Python)
 * [docs/VALIDATION.md](docs/VALIDATION.md): how equivalence and speed were measured, and the limits
 * [CHANGELOG.md](CHANGELOG.md): changes against upstream
