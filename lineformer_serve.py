@@ -2,7 +2,7 @@
 # Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 """`lineformer serve`: one long-lived owner of the GPU that takes LineFormer jobs over HTTP (localhost).
 
-    lineformer serve --ckpt iter_3000.pth --port 8775 --gpu-workers 2 --kept-only
+    lineformer serve --port 8775            # options: lineformer serve --help (lineformer_cli.py)
 
 The models are loaded once (lineformer_engine.Engine); callers submit lists of images with an output directory
 and poll. Model options (device, input size, kept-queries threshold, tiling) are server-wide: a job that needs
@@ -33,8 +33,10 @@ Shutdown: SIGINT / SIGTERM (to the server process) stop accepting jobs (503), le
 (--drain-timeout), end unfinished jobs "interrupted" (manifests written; resubmitting the same job skips what is
 done), then stop the workers and the HTTP server. A second signal abandons in-flight images at once.
 
-Engine failure (a model that does not load, a GPU worker that dies or raises, out of device memory): the engine
-ends every active job "failed" (manifests written) and accepts no more jobs. By default the server stays up and
+Out of device memory on an image stops that GPU worker and requeues the image once (bounded back-off,
+lineformer_engine.py); the server keeps running with the workers left. Engine failure (a model that does not load,
+a GPU worker that dies or raises, out of device memory a second time for one image or on the last GPU worker): the
+engine ends every active job "failed" (manifests written) and accepts no more jobs. By default the server stays up and
 answers 503 (GET /health says state "failed"), so a caller can read the error; it exits only on a signal (code 2).
 With --exit-on-failure the server stops at once and exits with code 2 (also when the models fail to load), for a
 supervisor that restarts it.
@@ -159,6 +161,7 @@ class _Handler(BaseHTTPRequestHandler):
         outputs = body.get('outputs') or {}
         if not isinstance(outputs, dict):
             raise jobs.JobError('"outputs" must be an object like {"instances": true, "masks": false}')
+        outputs = dict(outputs, **{k: True for k in self.server.always_outputs})  # lineformer serve --masks
         force = body.get('force', False)
         if not isinstance(force, bool):
             raise jobs.JobError('"force" must be true or false')
@@ -173,21 +176,24 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, addr, engine, verbose=False):
+    def __init__(self, addr, engine, verbose=False, always_outputs=()):
         super().__init__(addr, _Handler)
         self.engine = engine
         self.verbose = verbose
+        self.always_outputs = tuple(always_outputs)
 
 
 def serve(engine, host='127.0.0.1', port=8775, drain_timeout=600.0, verbose=False, ready_file=None,
-          exit_on_failure=False):
+          exit_on_failure=False, always_outputs=()):
     """Start the engine (if not started), serve until SIGINT / SIGTERM, then shut down. Returns an exit code:
     0 after a signal, 2 if the engine failed. exit_on_failure: a failure of the engine (model loading, a GPU worker
-    that dies or fails, out of memory) stops the server at once with 2 instead of leaving it up answering 503.
-    The signal handlers in place before are restored on return."""
+    that dies or fails, out of memory after the back-off) stops the server at once with 2 instead of leaving it up
+    answering 503. always_outputs: output kinds every job writes whatever it asks for (`lineformer serve --masks`:
+    instances and masks). The signal handlers in place before are restored on return."""
     if exit_on_failure and getattr(engine, 'failed_event', None) is None:
         raise ValueError('exit_on_failure needs an engine with failed_event')
-    httpd = Server((host, port), engine, verbose=verbose)  # bind first: a busy port fails before models load
+    # bind first: a busy port fails before models load
+    httpd = Server((host, port), engine, verbose=verbose, always_outputs=always_outputs)
     port = httpd.server_address[1]  # the bound port (port 0 picks a free one)
     log = engine.log
     if engine.state == 'created':

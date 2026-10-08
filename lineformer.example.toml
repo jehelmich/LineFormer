@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
+#
+# Advanced settings of the `lineformer` command: copy this file, uncomment what you change, and pass it with
+#     lineformer batch --list images.txt --out out/ --settings my.toml
+# Every key is shown with its default. A key the file does not set keeps its default; an unknown key is an error,
+# and so is a deprecated flag (e.g. --gpu-workers) that disagrees with the file. The effective values, after the
+# automatic sizing, are written into each job manifest (<out>/job.json, engine.settings).
+# Not set here: the threshold (--threshold), masks (--masks), the device (--cpu) and the checkpoint (--ckpt, or
+# LINEFORMER_CKPT, or <fork root>/iter_3000.pth, or ~/.cache/lineformer/iter_3000.pth).
+
+# --- model (one set per engine; outputs made with other values are not skipped as done)
+# config = "lineformer_swin_t_config.py"   # model config; a relative path is relative to this file
+                                           # (default: the config in the fork root)
+# input_size = "config"     # network input: "config" (fit 512 x 512, the training scale), N (fit N x N) or
+                            # "native" (EXPERIMENTAL: on dense chart grids it segmented grid lines as data lines)
+# tile = 512                # EXPERIMENTAL: run native-resolution crops of N x N px and merge them (default: off)
+# tile_overlap = 128        # overlap of neighbouring crops in px (with tile)
+# all_queries = false       # true: switch the kept-queries mode off and return all 100 queries per image, as
+                            # upstream (validation only: same lines, ~4x more GPU time, up to ~12 GB per GPU worker;
+                            # --threshold is then not allowed)
+# msda = "auto"             # MultiScaleDeformableAttention path on a GPU: "auto", "compiled" or "pytorch"
+                            # (debugging only; default: env LINEFORMER_MSDA, else "auto")
+
+# --- outputs (lineformer and lineformer batch)
+# ids = "stem"              # output id of an image without an explicit id: "stem" (file name without extension)
+                            # or "parent_stem" ("<parent dir>__<stem>"); two images with one id stop the run
+
+# --- workers (lineformer batch and lineformer serve)
+# gpu_workers = 2           # GPU worker processes (default: automatic, min(2, what fits in the free device
+                            # memory minus a headroom of max(2 GiB, 10 %)); 2 is the measured best)
+# gpu_mem_budget = "4G"     # device memory all GPU workers together may use: a fraction of the device (e.g. 0.5)
+                            # or a size ("4G", "512M"); each worker gets budget / gpu_workers
+                            # (default: automatic, the free memory minus the headroom)
+# pre_workers = 8           # image reading + resizing processes (default: min(8, max(2, CPUs // 3)))
+# post_workers = 4          # post-processing processes (lines, output files)
+# pre_threads = 1           # threads per pre-processing worker
+# post_threads = 1          # threads per post-processing worker
+# gpu_threads = 2           # CPU threads per GPU worker
+# max_inflight = 32         # images between feeding and done (default: 2 x all workers)
+# progress_s = 10.0         # lineformer batch: seconds between progress lines

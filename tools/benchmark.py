@@ -3,12 +3,14 @@
 """Throughput of the job engine on your own images: images/s with the warm-up excluded, per-stage times and the
 device memory of each GPU worker.
 
-    python tools/benchmark.py --ckpt iter_3000.pth --list images.txt [--gpu-workers 2] [--repeat 2] [--json r.json]
+    python tools/benchmark.py --list images.txt [--settings my.toml] [--repeat 2] [--json r.json]
 
 Same engine and model options as `lineformer batch`, with its defaults (device auto, kept-queries mode at 0.3,
---all-queries switches it off). The engine starts (model load and worker start-up are not timed), a warm-up job runs
-the first --warmup images (not timed), then --repeat timed jobs run over all images. Every job writes into a fresh
-temporary directory (lines only unless --instances / --masks), deleted at the end unless --keep.
+GPU workers sized automatically; --threshold, --cpu, --settings and the checkpoint lookup as there; set
+gpu_workers / gpu_mem_budget in the settings file to compare configurations). The engine starts (model load and
+worker start-up are not timed), a warm-up job runs the first --warmup images (not timed), then --repeat timed jobs
+run over all images. Every job writes into a fresh temporary directory (lines only unless --instances / --masks),
+deleted at the end unless --keep.
 
 Reported per timed pass: images/s on the job clock (first image fed to last image done), median pre / GPU / post
 seconds per image; per GPU worker the peak allocated and reserved device memory (torch.cuda max_memory_*). Numbers
@@ -53,7 +55,7 @@ def main(argv=None):
     if a.repeat < 1:
         ap.error('--repeat must be >= 1')
     jobs.normalize_items(items, a.ids)
-    eng = cli._make_engine(a, ap)
+    eng = cli._make_engine(a, ap, 'serve')  # engine options only (--ids, --instances, --masks are this tool's)
     work = Path(tempfile.mkdtemp(prefix='lineformer_bench_', dir=str(a.work_dir) if a.work_dir else None))
     outputs = {'instances': a.instances, 'masks': a.masks}
 
