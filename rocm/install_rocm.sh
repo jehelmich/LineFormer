@@ -6,13 +6,15 @@
 # Run from the repository root. Needs uv and, for ROCm, ROCm in /opt/rocm.
 # Other torch builds: set TORCH_INDEX and TORCH_PKGS, e.g. CPU only:
 #   TORCH_INDEX=https://download.pytorch.org/whl/cpu TORCH_PKGS="torch==2.14.1 torchvision==0.29.1"
+# The pins below are the versions the equivalence in docs/VALIDATION.md was measured with.
 set -e
 VENV=${VENV:-$HOME/lineformer}
+PYTHON=${PYTHON:-3.13}
 TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/rocm7.2}
 TORCH_PKGS=${TORCH_PKGS:-"torch==2.14.1+rocm7.2 torchvision==0.29.1+rocm7.2"}
 REPO=$(pwd)
 
-uv venv --python 3.11 "$VENV"
+uv venv --python "$PYTHON" "$VENV"
 PY="--python $VENV/bin/python"
 uv pip install $PY --index-url "$TORCH_INDEX" $TORCH_PKGS
 
@@ -25,8 +27,8 @@ if grep -qi microsoft /proc/version && "$VENV/bin/python" -c "import torch, sys;
     cp "$(readlink -f /opt/rocm/lib/libhsa-runtime64.so)" "$TL/libhsa-runtime64.so"
 fi
 
-uv pip install $PY numpy==1.23.5 opencv-python==4.11.0.86 scipy==1.9.3 scikit-image==0.21.0 matplotlib==3.7.5 \
-    pillow addict yapf==0.40.1 pyyaml packaging "setuptools<80" \
+uv pip install $PY numpy==2.5.2 opencv-python==5.0.0.93 scipy==1.18.1 scikit-image==0.26.0 matplotlib==3.11.2 \
+    pillow addict yapf pyyaml packaging setuptools \
     bresenham==0.2.1 tqdm chardet pycocotools terminaltables six pytest
 uv pip install $PY --no-deps -e third_party/mmcv            # pure-Python mmcv 1.7.2 subset, nothing to build
 uv pip install $PY --no-deps --no-build-isolation -e mmdetection

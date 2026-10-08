@@ -7,9 +7,15 @@ the kept-queries mode and through the job engine? And how fast is it?
 
 ## Environment
 
+Current stack (`rocm/install_rocm.sh`, unreleased): Python 3.13.16, torch 2.14.1+rocm7.2, the pure-Python mmcv
+1.7.2 subset in `third_party/mmcv` (no compiled ops), mmdet 2.28.2 (vendored), numpy 2.5.2, opencv-python
+5.0.0.93, scipy 1.18.1, scikit-image 0.26.0, matplotlib 3.11.2; checked in
+[Without compiled mmcv, current dependencies](#without-compiled-mmcv-current-dependencies-unreleased). The other
+measurements on this page were made with the v0.2.0 stack:
+
 AMD Radeon RX 7900 XTX (gfx1100, 24 GB), ROCm 7.2.0, WSL2 Ubuntu 24.04. Python 3.11.17, torch 2.14.1+rocm7.2,
 mmcv-full 1.7.2 built with CPU ops only, mmdet 2.28.2 (vendored), numpy 1.23.5, opencv-python 4.11.0.86,
-scipy 1.9.3, scikit-image 0.21.0 (`rocm/install_rocm.sh`). On the GPU, MultiScaleDeformableAttention runs mmcv's
+scipy 1.9.3, scikit-image 0.21.0 (`rocm/install_rocm.sh` of v0.2.0). On the GPU, MultiScaleDeformableAttention runs mmcv's
 pure-PyTorch implementation (`msda_compat.py`, path `pytorch`).
 
 ## Method
@@ -67,6 +73,32 @@ The GPU score differences are run-to-run variation of the GPU path (last row: th
 an effect of the subset; on CPU, which is deterministic, everything is bit-identical. A profiler counted 0 calls
 into compiled mmcv code on CPU and GPU, before (mmcv-full) and after; on the GPU the only stand-in that runs is
 `get_compiling_cuda_version`, called by `msda_compat`'s `auto` probe, which then picks `pytorch`.
+
+### Without compiled mmcv, current dependencies (unreleased)
+
+The current stack (see [Environment](#environment): Python 3.13, numpy 2.5.2, OpenCV 5.0.0.93, scipy 1.18.1,
+scikit-image 0.26.0, matplotlib 3.11.2, the same torch 2.14.1) with the mmcv subset. Against the reference A, with
+the fixed criteria:
+
+| candidate | PASS | min mask IoU | max \|dscore\| | lines identical | points within 1 px |
+|---|---|---|---|---|---|
+| GPU, kept 0.3 (`run.py --msda pytorch --kept-only 0.3`) | 72/72 | 0.99995 | 1.1e-5 | 44/72 images | all |
+| engine `lineformer batch`, defaults, 2 GPU workers | 72/72 | 0.99995 | 1.1e-5 | 44/72 images | all |
+| CPU, all queries, 12 images (every 7th + demo) | 12/12 | 0.99995 | 1.1e-5 | 10/12 images | all |
+
+Bit-identity, the same comparisons as in the table above:
+
+| run | masks | boxes (coordinates) | scores | lines |
+|---|---|---|---|---|
+| CPU, all queries, 12 images, against mmcv-full + Python 3.11 / numpy 1.23.5 / OpenCV 4.11 on CPU | identical 12/12 | identical | identical | identical 12/12 |
+| CPU, kept 0.3, the same 12 images, against the same | identical 12/12 | identical | identical | identical 12/12 |
+| GPU, kept 0.3 (`run.py`), against the earlier kept GPU run | identical 72/72 | identical | identical on 55/72, max diff 2.0e-6 | identical 72/72 |
+| engine, defaults, 2 GPU workers, against the same run | identical 72/72 | identical | identical on 53/72, max diff 1.3e-6 | identical 72/72 |
+
+The dependency upgrade changed no output: on CPU every array and line is bit-identical to the v0.2.0 stack, on the
+GPU only the scores move, within the GPU's run-to-run variation. Nothing had to be pinned back. Speed was not
+re-measured: the machine was shared with other GPU and CPU work during these runs; interleaved runs of the two
+stacks under the same load showed no difference beyond that noise.
 
 ## Speed
 

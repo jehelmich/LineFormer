@@ -16,9 +16,11 @@ version_file = "mmdet/version.py"
 
 
 def get_version():
+    # LineFormer fork: an explicit namespace; exec() no longer writes into locals() on Python >= 3.13 (PEP 667)
+    ns = {}
     with open(version_file, "r") as f:
-        exec(compile(f.read(), version_file, "exec"))
-    return locals()["__version__"]
+        exec(compile(f.read(), version_file, "exec"), ns)
+    return ns["__version__"]
 
 
 def make_cuda_ext(name, module, sources, sources_cuda=[]):

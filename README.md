@@ -8,7 +8,7 @@ model with the same checkpoint and gives the same results (checked image by imag
 * **Compatibility**: inference on GPUs without mmcv's compiled ops, e.g. AMD GPUs with ROCm, through mmcv's own
   pure-PyTorch MultiScaleDeformableAttention (`msda_compat.py`); nothing to compile: the pure-Python part of mmcv
   1.7.2 that inference uses is vendored in `third_party/mmcv` (compiled ops are stand-ins that raise if called);
-  an install script for a current stack (Python 3.11, torch 2.14 ROCm 7.2).
+  an install script for a current stack (Python 3.13, torch 2.14 ROCm 7.2, numpy 2.5, OpenCV 5.0).
 * **Speed**: a kept-queries mode that post-processes only the queries that can reach the 0.3 threshold
   (`kept_queries.py`; same lines, detector time per image 0.27 s -> 0.056 s, peak device memory ~12 GB -> 0.5 GB),
   and a job engine

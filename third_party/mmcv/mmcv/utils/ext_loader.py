@@ -1,7 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import importlib
 import os
-import pkgutil
+import importlib.util
 import warnings
 from collections import namedtuple
 
@@ -68,5 +68,4 @@ else:
 
 
 def check_ops_exist() -> bool:
-    ext_loader = pkgutil.find_loader('mmcv._ext')
-    return ext_loader is not None
+    return importlib.util.find_spec('mmcv._ext') is not None

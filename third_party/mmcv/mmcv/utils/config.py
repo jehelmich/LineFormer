@@ -510,7 +510,7 @@ class Config:
         if digit_version(yapf.__version__) >= digit_version('0.40.2'):
             text, _ = FormatCode(text, style_config=yapf_style)
         else:
-            text, _ = FormatCode(text, style_config=yapf_style, verify=True)
+            text, _ = FormatCode(text, style_config=yapf_style)
 
         return text
 

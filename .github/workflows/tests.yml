@@ -2,8 +2,9 @@
 # Copyright 2026 LineFormer fork contributors (https://github.com/jehelmich/LineFormer)
 #
 # Unit tests on CPU with the full model stack: torch (CPU wheels), the vendored pure-Python mmcv subset
-# (third_party/mmcv) and the vendored mmdetection. Nothing is compiled. No checkpoint and no GPU: tests that need
-# them are skipped with the reason printed by pytest -rs.
+# (third_party/mmcv) and the vendored mmdetection, at the versions of rocm/install_rocm.sh. Nothing is compiled.
+# No checkpoint and no GPU: tests/test_model_cpu.py builds the model with random weights and runs one forward and
+# get_dataseries on the demo image; tests that need more are skipped with the reason printed by pytest -rs.
 name: tests
 
 on:
@@ -19,13 +20,13 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.13"
       - name: Install
         run: |
           python -m pip install --upgrade pip
           pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy==1.23.5 scipy==1.9.3 scikit-image==0.21.0 opencv-python-headless==4.11.0.86 \
-            matplotlib==3.7.5 pillow addict yapf==0.40.1 pyyaml packaging "setuptools<80" \
+          pip install numpy==2.5.2 scipy==1.18.1 scikit-image==0.26.0 opencv-python-headless==5.0.0.93 \
+            matplotlib==3.11.2 pillow addict yapf pyyaml packaging setuptools \
             bresenham==0.2.1 pycocotools terminaltables six pytest
           pip install --no-deps -e third_party/mmcv
           pip install --no-deps --no-build-isolation -e mmdetection

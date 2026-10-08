@@ -16,11 +16,23 @@
   now also with no mmcv extension at all).
 - The engine's manifest reports the `mmcv` distribution version (was `mmcv-full`).
 
+### Dependencies
+- `rocm/install_rocm.sh` (and CI): Python 3.13 (was 3.11; `PYTHON=` to change), numpy 2.5.2 (1.23.5),
+  opencv-python 5.0.0.93 (4.11.0.86), scipy 1.18.1 (1.9.3), scikit-image 0.26.0 (0.21.0), matplotlib 3.11.2
+  (3.7.5), yapf and setuptools unpinned; torch 2.14.1 / torchvision 0.29.1 unchanged (the newest ROCm 7.2 build).
+- Patches for them: mmcv `utils/config.py` (yapf >= 0.40.2: no `FormatCode(verify=)`), mmcv `utils/ext_loader.py`
+  (`importlib.util.find_spec` for `pkgutil.find_loader`), mmdet `setup.py` (PEP 667: version read into an explicit
+  namespace), `np.int` -> `int` in five lines of mmdet dataset/sampler code.
+- Results unchanged: CPU outputs bit-identical to the v0.2.0 stack; on the GPU masks, boxes and lines identical, scores
+  within the GPU's run-to-run variation; PASS 72/72 against the original stack (`docs/VALIDATION.md`).
+
 ### Tests
 - `tests/test_mmcv_subset.py`: the import closure (infer, engine, mmdet, the model built from the config) loads no
   compiled mmcv code; every stand-in raises when used; msda_compat without a kernel.
 - CI installs the mmcv subset and the vendored mmdet (nothing to compile), so the model-stack tests run there
   instead of being skipped.
+- `tests/test_model_cpu.py`: the model built from the config with random weights (no checkpoint), one forward and
+  `get_dataseries` on the demo image on CPU, kept-queries mode off and on.
 
 ## v0.2.0 (2026-10-07)
 

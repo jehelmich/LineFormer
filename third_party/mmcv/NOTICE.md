@@ -42,5 +42,14 @@ Changed or added in `mmcv/ops/`:
   the full mmcv (`DCN`, `DCNv2`, `SAC`, `carafe`, `CrissCrossAttention`, `MMSyncBN`) are registered with stand-ins
   and fail the same way when a config builds them.
 
+Patched for current dependencies (each a one-line change, marked in the file history only):
+- `utils/config.py`: `FormatCode(..., verify=True)` -> `FormatCode(...)`; yapf >= 0.40.2 removed `verify` (it only
+  re-compiled the formatted text). `Config.pretty_text` / `dump` work with any yapf.
+- `utils/ext_loader.py`: `check_ops_exist` uses `importlib.util.find_spec` instead of `pkgutil.find_loader`
+  (deprecated in Python 3.12, removed in 3.14). Same result.
+
+No other change was needed for Python 3.13, numpy 2.5, OpenCV 5.0, scipy 1.18 and scikit-image 0.26: the subset
+uses none of the removed numpy aliases.
+
 `pyproject.toml` (new) installs the subset as the distribution `mmcv` version `1.7.2+lineformer`; the import name
 and `mmcv.__version__` stay `mmcv` / `1.7.2`, which the vendored mmdetection checks.
