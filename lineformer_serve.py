@@ -56,8 +56,8 @@ import lineformer_jobs as jobs
 from lineformer_engine import EngineFailed
 
 MAX_BODY = 64 * 2 ** 20
-MODEL_KEYS = ('device', 'msda', 'kept_thr', 'input_size', 'tile', 'tile_overlap', 'tile_link_thr', 'tile_min_px',
-              'ckpt', 'config')
+MODEL_KEYS = ('device', 'msda', 'kept_thr', 'line_thr', 'input_size', 'tile', 'tile_overlap', 'tile_link_thr',
+              'tile_min_px', 'ckpt', 'config')
 
 
 class ModelMismatch(jobs.JobError):

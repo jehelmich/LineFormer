@@ -261,6 +261,17 @@ def test_model_options():
         fa = engine.fingerprint(mo, 'c', 'f')
         fb = engine.fingerprint(t, 'c', 'f')
         assert jobs.fingerprint_diff(fa, fb) == ['input_size', 'tile']
+        # the line threshold: 0.3 by default (the fingerprint of earlier engines), part of the fingerprint
+        assert mo.line_thr == 0.3 and fa['line_thr'] == 0.3
+        k3 = engine.ModelOptions(ckpt=str(ck), kept_thr=0.3).resolved()
+        k1 = engine.ModelOptions(ckpt=str(ck), kept_thr=0.1, line_thr=0.1).resolved()
+        assert jobs.fingerprint_diff(engine.fingerprint(k3, 'c', 'f'), engine.fingerprint(k1, 'c', 'f')) == [
+            'kept_thr', 'line_thr']
+        a1 = engine.ModelOptions(ckpt=str(ck), line_thr=0.1).resolved()  # all queries, line threshold 0.1
+        assert jobs.fingerprint_diff(fa, engine.fingerprint(a1, 'c', 'f')) == ['line_thr']
+        assert a1.tile_score_thr == 0.1
+        for bad in (0.0, 1.0, True):
+            _raises(ValueError, engine.ModelOptions(ckpt=str(ck), line_thr=bad).resolved)
 
 
 # ------------------------------------------------------------------ shared-memory transfer

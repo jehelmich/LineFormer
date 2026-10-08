@@ -15,7 +15,8 @@ Pipeline (the per-image maths of infer.get_dataseries, not re-implemented):
                 mmdet.apis.inference_detector) - or, with tiling, the crops of tiling.crop_boxes, each through it;
   GPU workers   N processes, each with its own model: collate + forward (the second half of inference_detector);
                 masks go to the post workers through POSIX shared memory;
-  post workers  infer.get_dataseries with the forward swapped for this result (lines: instances with score > 0.3),
+  post workers  infer.get_dataseries with the forward swapped for this result (lines: instances with score >
+                line_thr),
                 tiling.merge_instances for tiled images, then the output files (lineformer_jobs.py lists them),
                 with lines and instances in a deterministic geometric order (instance_order; lineformer_jobs.py
                 "Order"): lines by (leftmost x, mean y, -score), line i = instance i, the instances without a
@@ -30,11 +31,15 @@ Model options (ModelOptions; one set per engine - a different input size or thre
   kept_thr           kept-queries mode (kept_queries.py), None = OFF (the default; the environment variable is NOT
                      read here). A threshold in (0, 1), e.g. 0.3, or 0.1 to keep low-score instances in the
                      .instances.npz: only queries whose class score reaches it are post-processed and returned.
+  line_thr           the final score a line needs (lines = instances with score > line_thr; default 0.3, the value
+                     infer.get_dataseries hard-codes, which the engine replaces by this one). The command line sets
+                     kept_thr = line_thr = --threshold: exact, since final score = class score x mask score <= class
+                     score. Part of the output fingerprint.
   input_size         'config' (the config's 512 fit, default), N (fit N x N) or 'native' (scale_compat.py;
                      'native' is EXPERIMENTAL, see docs/VALIDATION.md "Input scale")
   tile, tile_overlap EXPERIMENTAL: native crops of tile x tile px with that overlap, merged (tiling.py); needs
                      input_size 'native' (set automatically); per-crop instances below the score threshold of the merge
-                     (kept_thr if set, else 0.3) are dropped before the merge.
+                     (kept_thr if set, else line_thr) are dropped before the merge.
 Every GPU worker builds its model with scale_compat.build_model and calls kept_queries.configure(model, thr)
 explicitly (off = False), then checks the threshold and the parameter device.
 
@@ -84,7 +89,8 @@ import lineformer_jobs as jobs
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG = str(HERE / 'lineformer_swin_t_config.py')
 THREAD_ENV = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS')
-LINE_THR = 0.3  # infer.get_dataseries -> do_instance(score_thr=0.3); parse_result keeps score > 0.3
+LINE_THR = 0.3  # default line threshold: infer.get_dataseries -> do_instance(score_thr=0.3); parse_result keeps
+#                 score > 0.3. The engine passes ModelOptions.line_thr instead (dataseries_from_result).
 TASK_KEYS = ('job', 'idx', 'id', 'path', 'out', 'instances', 'masks', 'fingerprint')  # what the feeder sends
 
 # ------------------------------------------------------------------ automatic sizing: measured device memory
@@ -186,10 +192,12 @@ def forward(model, datas, check_no_pad=True):
     return results
 
 
-def dataseries_from_result(infer, result):
-    """infer.get_dataseries(img, to_clean=False, return_masks=True) with the forward replaced by `result`."""
+def dataseries_from_result(infer, result, line_thr=LINE_THR):
+    """infer.get_dataseries(img, to_clean=False, return_masks=True) with the forward replaced by `result` and the
+    line threshold (get_dataseries passes 0.3 to do_instance) replaced by line_thr: the lines are the instances with
+    score > line_thr, parse_result's comparison."""
     orig = infer.do_instance
-    infer.do_instance = lambda model, img, score_thr=0.3: infer.parse_result(result, score_thr)
+    infer.do_instance = lambda model, img, score_thr=0.3: infer.parse_result(result, line_thr)
     if not hasattr(infer, 'model'):
         infer.model = None
     try:
@@ -503,6 +511,7 @@ class ModelOptions:
     input_size: Union[str, int] = 'config'
     tile: Optional[int] = None
     tile_overlap: int = 128
+    line_thr: float = LINE_THR
     tile_link_thr: float = 0.5
     tile_min_px: int = 20
 
@@ -521,6 +530,9 @@ class ModelOptions:
             if isinstance(o.kept_thr, bool) or not 0.0 < float(o.kept_thr) < 1.0:
                 raise ValueError('kept_thr must be None (off) or a threshold in (0, 1), got %r' % (o.kept_thr,))
             o.kept_thr = float(o.kept_thr)
+        if isinstance(o.line_thr, bool) or not 0.0 < float(o.line_thr) < 1.0:
+            raise ValueError('line_thr must be a threshold in (0, 1), got %r' % (o.line_thr,))
+        o.line_thr = float(o.line_thr)
         if o.tile is not None:
             if o.input_size not in ('native', 'config') and parse_input_size(o.input_size) != 'native':
                 raise ValueError('tiling runs the crops at native resolution; input_size %r is not allowed with '
@@ -534,7 +546,7 @@ class ModelOptions:
 
     @property
     def tile_score_thr(self):
-        return self.kept_thr if self.kept_thr is not None else LINE_THR
+        return self.kept_thr if self.kept_thr is not None else self.line_thr
 
 
 def sha256_file(path):
@@ -549,7 +561,7 @@ def fingerprint(mo, ckpt_sha256, config_sha256):
     """What decides the outputs (skip-if-done compares it). Device and MSDA path are not in it: they give
     equivalent results (tools/equivalence acceptance); they are recorded in the manifest."""
     fp = {'engine': jobs.ENGINE_VERSION, 'ckpt_sha256': ckpt_sha256, 'config_sha256': config_sha256,
-          'input_size': mo.input_size, 'kept_thr': mo.kept_thr, 'line_thr': LINE_THR, 'tile': None}
+          'input_size': mo.input_size, 'kept_thr': mo.kept_thr, 'line_thr': mo.line_thr, 'tile': None}
     if mo.tile is not None:
         fp['tile'] = {'size': mo.tile, 'overlap': mo.tile_overlap, 'link_thr': mo.tile_link_thr,
                       'min_px': mo.tile_min_px, 'score_thr': mo.tile_score_thr}
@@ -738,7 +750,7 @@ def gpu_worker(wid, mo, budget, n_workers, threads, pre_q, post_q, stat_q, hooks
                         tiles.append((box, scores, masks))
                     rec['packed_tiles'] = pack_tiles(tiles)
                 else:
-                    rec['packed'] = pack_result(results[0], 'all' if rec['masks'] else 'kept')
+                    rec['packed'] = pack_result(results[0], 'all' if rec['masks'] else 'kept', mo['line_thr'])
                 rec['t_gpu_start'], rec['t_gpu_end'], rec['t_pack_end'] = t0, t1, time.time()
             except Exception as e:
                 if _is_oom(e):  # bounded back-off: this worker stops, the engine requeues the image or fails
@@ -776,18 +788,18 @@ def _savez_atomic(path, **arrays):
     os.replace(tmp, path)
 
 
-def write_outputs(infer, rec, result, tile_info=None):
+def write_outputs(infer, rec, result, tile_info=None, line_thr=LINE_THR):
     """Lines (+ optional instances / masks) of one image -> files, in the output order (ORDER); the JSON is
     returned, not written: the caller writes it last (it marks the image done). -> (json path, json object)."""
     import numpy as np
     boxes, labels, masks = split_result(result)
-    sel = boxes[:, 4] > LINE_THR
+    sel = boxes[:, 4] > line_thr
     if any(s and m is None for s, m in zip(sel.tolist(), masks)):
         raise RuntimeError('a mask above the line threshold was not transferred')
     t = time.time()
-    ds, _ = dataseries_from_result(infer, result)
+    ds, _ = dataseries_from_result(infer, result, line_thr)
     rec['t_lines_s'] = time.time() - t
-    perm, lperm = instance_order(boxes, labels, ds)
+    perm, lperm = instance_order(boxes, labels, ds, line_thr)
     perm = np.asarray(perm, dtype=np.int64)
     boxes, labels, masks, sel = boxes[perm], labels[perm], [masks[i] for i in perm], sel[perm]
     ds = [ds[k] for k in lperm]
@@ -858,7 +870,7 @@ def post_worker(mo, threads, post_q, done_q, stat_q=None):
                 result = unpack_result(packed)
             else:
                 raise RuntimeError('no detector result')
-            jpath, obj = write_outputs(infer, rec, result, tile_info)
+            jpath, obj = write_outputs(infer, rec, result, tile_info, mo['line_thr'])
             rec['t_post_end'] = time.time()
             obj['timings']['post_s'] = rec['t_post_end'] - rec['t_post_start']
             jobs.write_json_atomic(jpath, obj)
@@ -946,7 +958,7 @@ class Engine:
             'model_options': asdict(mo), 'fingerprint': self.fingerprint, 'versions': self.versions,
             'device': mo.device, 'msda': mo.msda, 'msda_env': os.environ.get('LINEFORMER_MSDA'), 'msda_path': None,
             'kept_thr': mo.kept_thr, 'input_size': mo.input_size,
-            'tile': self.fingerprint['tile'], 'line_thr': LINE_THR, 'order': jobs.ORDER,
+            'tile': self.fingerprint['tile'], 'line_thr': mo.line_thr, 'order': jobs.ORDER,
             'gpu_workers': 'auto' if self.n_gpu is None else self.n_gpu,
             'pre_workers': self.n_pre, 'post_workers': self.n_post,
             'gpu_mem_budget': 'auto' if self.budget_arg is None else self.budget_arg,
@@ -987,8 +999,9 @@ class Engine:
                         os.environ[k] = v
             self.procs[role].append(p)
 
-        self.log('starting %d GPU worker(s) on %s (input size %s, kept_thr %s, tile %s, memory budget %s)' % (
-            self.n_gpu, mo.device, mo.input_size, mo.kept_thr, mo.tile, self.engine_info['gpu_mem_budget']))
+        self.log('starting %d GPU worker(s) on %s (input size %s, kept_thr %s, line_thr %s, tile %s, memory budget '
+                 '%s)' % (self.n_gpu, mo.device, mo.input_size, mo.kept_thr, mo.line_thr, mo.tile,
+                          self.engine_info['gpu_mem_budget']))
         for w in range(self.n_gpu):
             spawn('gpu', gpu_worker, (w, mod, self.budget, self.n_gpu, self.threads['gpu'], self.pre_q, self.post_q,
                                       self.stat_q, self._test_hooks))

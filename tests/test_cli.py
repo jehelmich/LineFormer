@@ -123,20 +123,20 @@ def test_deprecated_flags_applied_with_a_warning():
 def test_threshold_and_device():
     a = _parse('batch', ['--out', 'o', 'x.png'])
     v, _ = cli.effective_settings(a, 'batch')
-    assert cli._threshold(a, v) == 0.3 and cli._device(a) == 'auto'
+    assert cli._threshold(a, v) == (0.3, 0.3) and cli._device(a) == 'auto'
     a = _parse('batch', ['--out', 'o', 'x.png', '--threshold', '0.1', '--cpu'])
-    assert cli._threshold(a, v) == 0.1 and cli._device(a) == 'cpu'
+    assert cli._threshold(a, v) == (0.1, 0.1) and cli._device(a) == 'cpu'
     a = _parse('batch', ['--out', 'o', 'x.png', '--kept-thr', '0.2', '--kept-only'])
-    assert cli._threshold(a, v) == 0.2
+    assert cli._threshold(a, v) == (0.2, 0.2)
     a = _parse('batch', ['--out', 'o', 'x.png', '--kept-thr', '0.2', '--threshold', '0.3'])
     _raises(cli.SetupError, cli._threshold, a, v)
     a = _parse('batch', ['--out', 'o', 'x.png', '--threshold', '1.5'])
     _raises(cli.SetupError, cli._threshold, a, v)
     a = _parse('batch', ['--out', 'o', 'x.png', '--all-queries'])
     v2, _ = cli.effective_settings(a, 'batch', warn=lambda m: None)
-    assert cli._threshold(a, v2) is None
-    a = _parse('batch', ['--out', 'o', 'x.png', '--all-queries', '--threshold', '0.3'])
-    _raises(cli.SetupError, cli._threshold, a, v2)
+    assert cli._threshold(a, v2) == (None, 0.3)  # all queries: kept mode off, the line threshold stays
+    a = _parse('batch', ['--out', 'o', 'x.png', '--all-queries', '--threshold', '0.1'])
+    assert cli._threshold(a, v2) == (None, 0.1)
     a = _parse('batch', ['--out', 'o', 'x.png', '--device', 'cuda:1'])
     assert cli._device(a) == 'cuda:1'
     a = _parse('batch', ['--out', 'o', 'x.png', '--device', 'cuda:1', '--cpu'])
@@ -199,7 +199,7 @@ def test_engine_from_old_style_flags_and_settings():
                            '--gpu-mem-budget', '3G', '--kept-thr', '0.3', '--instances'])
         eng, err = _exit_and_stderr(lambda _: cli._make_engine(a, ap), None)
         assert 'DEPRECATED --gpu-workers' in err and 'DEPRECATED --kept-thr' in err and 'gpu_mem_budget' in err
-        assert eng.n_gpu == 2 and eng.budget == ('bytes', 3 * 2 ** 30) and eng.mo.kept_thr == 0.3
+        assert eng.n_gpu == 2 and eng.budget == ('bytes', 3 * 2 ** 30) and eng.mo.kept_thr == eng.mo.line_thr == 0.3
         assert eng.mo.device == 'cpu' and eng.mo.ckpt == str(ck.resolve())
         eng.prepare()
         st = eng.engine_info['settings']
@@ -209,4 +209,7 @@ def test_engine_from_old_style_flags_and_settings():
         a = ap.parse_args(['--out', str(Path(d) / 'o'), 'x.png', '--ckpt', str(ck), '--cpu'])
         eng = cli._make_engine(a, ap)
         assert eng.n_gpu is None and eng.budget is None  # automatic sizing at start
+        a = ap.parse_args(['--out', str(Path(d) / 'o'), 'x.png', '--ckpt', str(ck), '--cpu', '--threshold', '0.1'])
+        eng = cli._make_engine(a, ap)
+        assert eng.mo.kept_thr == eng.mo.line_thr == 0.1 and eng.mo.tile_score_thr == 0.1
         assert isinstance(eng, engine.Engine)

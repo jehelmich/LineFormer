@@ -42,14 +42,17 @@ def _instances():
     return np.array(boxes, np.float32), masks
 
 
-def _write(out, order, outputs=('instances', 'masks')):
+def _write(out, order, outputs=('instances', 'masks'), line_thr=None):
     import infer
     boxes, masks = _instances()
     rec = {'out': out, 'id': 'img', 'path': '/img/img.png', 'image_sha256': 'x', 'shape': [H, W, 3],
            'instances': 'instances' in outputs, 'masks': 'masks' in outputs, 'fingerprint': {}, 'job': 'j',
            't_pre_start': 0.0, 't_pre_end': 0.0, 't_gpu_start': 0.0, 't_gpu_end': 0.0}
     result = ([boxes[order]], [[masks[i] for i in order]])
-    jpath, obj = engine.write_outputs(infer, rec, result)
+    if line_thr is None:  # the default argument, as before the line threshold was an option
+        jpath, obj = engine.write_outputs(infer, rec, result)
+    else:
+        jpath, obj = engine.write_outputs(infer, rec, result, line_thr=line_thr)
     jobs.write_json_atomic(jpath, obj)
     return engine.load_outputs(out, 'img')
 
@@ -75,6 +78,29 @@ def test_output_order_does_not_depend_on_model_order():
             assert res['lines'] == ref['lines']
             assert np.array_equal(res['boxes'], ref['boxes']) and np.array_equal(res['labels'], ref['labels'])
             assert np.array_equal(res['masks'], ref['masks'])
+
+
+def test_line_threshold():
+    """line_thr T: the lines are the instances with score > T (0.2 becomes a line at 0.1; 0.31 is dropped at 0.5),
+    line i is still instance i, and at 0.3 the output is the default's."""
+    with tempfile.TemporaryDirectory() as d:
+        res = {}
+        for t in (None, 0.3, 0.1, 0.5):
+            out = Path(d) / str(t)
+            out.mkdir()
+            res[t] = _write(str(out), [2, 0, 3, 1], line_thr=t)
+        assert res[0.3]['lines'] == res[None]['lines'] and np.array_equal(res[0.3]['boxes'], res[None]['boxes'])
+        assert np.array_equal(res[0.3]['masks'], res[None]['masks'])
+        assert res[0.1]['json']['n_lines'] == 4 and res[0.1]['json']['n_instances_gt_line_thr'] == 4
+        assert np.allclose(sorted(res[0.1]['scores'][:4]), [0.2, 0.31, 0.6, 0.95])
+        for ln, m in zip(res[0.1]['lines'], res[0.1]['masks']):
+            assert ln and all(m[int(p['y']), int(p['x'])] for p in ln)
+        # every line of 0.3 is still there, unchanged
+        assert all(ln in res[0.1]['lines'] for ln in res[0.3]['lines'])
+        blob = [ln for ln in res[0.1]['lines'] if ln not in res[0.3]['lines']]
+        assert len(blob) == 1 and all(150 <= p['x'] < 160 for p in blob[0])  # the score-0.2 instance
+        assert res[0.5]['json']['n_lines'] == 2
+        assert [ln for ln in res[0.3]['lines'] if ln not in res[0.5]['lines']] == [res[0.3]['lines'][0]]  # x 5, 0.31
 
 
 def test_lines_only_output_is_ordered_too():

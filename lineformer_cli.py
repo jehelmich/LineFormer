@@ -10,11 +10,12 @@ Three forms, one small set of options (since 0.3.0):
 
 Defaults:
   * device: the GPU ('cuda:0', CUDA or ROCm) if PyTorch sees one, else the CPU; --cpu forces the CPU.
-  * --threshold T (default 0.3) is the class-score threshold of the kept-queries mode (kept_queries.py): only the
-    instances whose class score reaches T are post-processed and returned; a line also needs a final score
-    (class score x mask score) > 0.3, so T <= 0.3 gives the same lines as all queries, and T > 0.3 drops the lines
-    whose class score is below T. all_queries = true in the settings switches the mode off (all 100 queries, as
-    upstream; ~4x more GPU time and up to ~12 GB device memory per process). LINEFORMER_KEPT_QUERIES is not read.
+  * --threshold T (default 0.3, as upstream) is the score a line needs to be reported: the lines are the instances
+    whose final score (class score x mask score) is > T, and only the queries whose class score reaches T are
+    post-processed (the kept-queries mode, kept_queries.py; exact, since final score <= class score). Lower values
+    also return fainter, less certain lines; T is part of the output fingerprint. all_queries = true in the
+    settings switches the kept-queries mode off (all 100 queries, as upstream; ~4x more GPU time and up to ~12 GB
+    device memory per process); the line threshold is still T. LINEFORMER_KEPT_QUERIES is not read.
   * batch / serve: the GPU workers are sized from the free device memory at start (lineformer_engine.py,
     "Automatic sizing"); out of device memory on an image stops that worker and requeues the image once
     ("bounded back-off"); min(8, max(2, CPUs // 3)) pre-processing workers.
@@ -57,7 +58,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG = HERE / 'lineformer_swin_t_config.py'
 SUBCOMMANDS = ('batch', 'serve')
-DEFAULT_KEPT_THR = 0.3
+DEFAULT_KEPT_THR = 0.3  # --threshold default: the line threshold and the kept-queries threshold
+THRESHOLD_HELP = ('score a line needs to be reported (default 0.3, as upstream); lower values also return fainter, '
+                  'less certain lines')
 EXPERIMENTAL = ('EXPERIMENTAL: in an in-sample test on dense chart grids, native-resolution input made the model '
                 'segment grid lines as data lines (precision 0.97 -> ~0.2); best results near the training scale '
                 '(~512 px per chart)')
@@ -289,7 +292,7 @@ def effective_settings(a, form, warn=_log):
 
 
 def _threshold(a, values):
-    """-> the kept-queries threshold (None: mode off, all_queries)."""
+    """-> (kept-queries threshold or None with all_queries, line threshold). Both are --threshold T."""
     kept_thr = getattr(a, 'kept_thr', None)
     if getattr(a, 'kept_only', None):
         _log('DEPRECATED --kept-only: no effect (the kept-queries mode is the default)')
@@ -298,14 +301,10 @@ def _threshold(a, values):
         if a.threshold is not None and a.threshold != kept_thr:
             raise SetupError('--threshold %g and --kept-thr %g disagree' % (a.threshold, kept_thr))
     thr = a.threshold if a.threshold is not None else kept_thr
-    if values['all_queries']:
-        if thr is not None:
-            raise SetupError('all_queries switches the kept-queries mode off; drop --threshold')
-        return None
     thr = DEFAULT_KEPT_THR if thr is None else float(thr)
     if not 0.0 < thr < 1.0:
         raise SetupError('--threshold must lie in (0, 1), got %g' % thr)
-    return thr
+    return (None if values['all_queries'] else thr), thr
 
 
 def _device(a):
@@ -319,8 +318,9 @@ def _device(a):
     return 'cpu' if a.cpu else 'auto'
 
 
-def _kept_text(kept):
-    return 'off (all queries)' if kept is None else 'on, class-score threshold %g' % kept
+def _thr_text(kept, line):
+    return 'line threshold %g (score > %g), kept-queries mode %s' % (
+        line, line, 'off (all queries)' if kept is None else 'on')
 
 
 # ================================================================== argument parsers
@@ -340,10 +340,7 @@ def _public_args(ap, form):
                         help='exit with code 2 as soon as the engine fails (models do not load, a GPU worker dies, '
                              'out of memory after the back-off; running jobs are marked failed first) instead of '
                              'staying up and answering 503')
-    ap.add_argument('--threshold', type=float, default=None, metavar='T',
-                    help='class-score threshold (default %.1f): only instances whose class score reaches T are '
-                         'returned; a line also needs a final score > 0.3, so T <= 0.3 gives the same lines'
-                         % DEFAULT_KEPT_THR)
+    ap.add_argument('--threshold', type=float, default=None, metavar='T', help=THRESHOLD_HELP)
     if form == 'single':
         ap.add_argument('--masks', action='store_true',
                         help='also write <id>.masks.npz (the masks of the instances behind the lines)')
@@ -385,7 +382,7 @@ def _hidden_model_args(ap, engine=True):
 def _engine_args(ap):
     """The model and worker options of the engine forms (also used by tools/benchmark.py): --threshold, --cpu,
     --settings, and the hidden --ckpt and deprecated flags."""
-    ap.add_argument('--threshold', type=float, default=None, metavar='T', help='class-score threshold (default 0.3)')
+    ap.add_argument('--threshold', type=float, default=None, metavar='T', help=THRESHOLD_HELP)
     ap.add_argument('--cpu', action='store_true', help='run on the CPU')
     ap.add_argument('--settings', type=Path, metavar='FILE.toml', help='advanced settings (%s)' % EXAMPLE_SETTINGS)
     ap.add_argument('--ckpt', type=Path, default=None, help=H)
@@ -471,7 +468,7 @@ def main_single(argv=None):
     a = ap.parse_args(argv)
     try:
         values, _ = effective_settings(a, 'single')
-        kept = _threshold(a, values)
+        kept, line = _threshold(a, values)
         device = _device(a)
     except SetupError as e:
         ap.error(str(e))
@@ -489,12 +486,15 @@ def main_single(argv=None):
         import torch
         device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     print(f'{len(todo)} of {len(recs)} images to do on {device}', flush=True)
-    _log('device %s%s, kept-queries mode %s, checkpoint %s (%s)' % (
-        device, ' (auto)' if not a.cpu and getattr(a, 'device', None) is None else '', _kept_text(kept), ckpt,
+    _log('device %s%s, %s, checkpoint %s (%s)' % (
+        device, ' (auto)' if not a.cpu and getattr(a, 'device', None) is None else '', _thr_text(kept, line), ckpt,
         ckpt_src))
     import infer  # heavy imports after argument checks
     infer.load_model(str(values['config']), ckpt, device, msda=values['msda'],
                      kept_only=False if kept is None else kept)
+    if line != DEFAULT_KEPT_THR:  # get_dataseries passes 0.3 to do_instance; the line threshold replaces it here
+        do_instance = infer.do_instance
+        infer.do_instance = lambda model, img, score_thr=0.3: do_instance(model, img, score_thr=line)
 
     t0 = time.time()
     ahead = 8
@@ -529,7 +529,7 @@ def _make_engine(a, ap, form='batch', values=None, sources=None):
     try:
         if values is None:
             values, sources = effective_settings(a, form)
-        kept = _threshold(a, values)
+        kept, line = _threshold(a, values)
         device = _device(a)
         ckpt, ckpt_src = resolve_ckpt(getattr(a, 'ckpt', None))
     except SetupError as e:
@@ -538,13 +538,13 @@ def _make_engine(a, ap, form='batch', values=None, sources=None):
     if values['tile'] is not None and size == 'config':
         size = 'native'
     mo = ModelOptions(ckpt=ckpt, config=str(values['config']), device=device, msda=values['msda'], kept_thr=kept,
-                      input_size=size, tile=values['tile'], tile_overlap=values['tile_overlap'])
+                      line_thr=line, input_size=size, tile=values['tile'], tile_overlap=values['tile_overlap'])
     try:
         mo = mo.resolved()
     except (ValueError, RuntimeError) as e:
         ap.error(str(e))
     pre = values['pre_workers'] if values['pre_workers'] is not None else default_pre_workers()
-    settings = dict(values, pre_workers=pre, input_size=mo.input_size, config=mo.config, threshold=kept,
+    settings = dict(values, pre_workers=pre, input_size=mo.input_size, config=mo.config, threshold=line,
                     device=mo.device, checkpoint={'path': mo.ckpt, 'source': ckpt_src},
                     settings_file=str(Path(a.settings).resolve()) if getattr(a, 'settings', None) else None,
                     sources=dict(sources or {}))
@@ -552,9 +552,14 @@ def _make_engine(a, ap, form='batch', values=None, sources=None):
         for k in ('gpu_workers', 'gpu_mem_budget'):
             if values[k] is None:
                 settings['sources'][k] = 'auto'
-    _log('device %s%s, kept-queries mode %s, %s GPU worker(s), %d pre-processing workers, checkpoint %s (%s)' % (
-        mo.device, ' (auto)' if device == 'auto' else '', _kept_text(kept),
-        'auto-sized' if values['gpu_workers'] is None else values['gpu_workers'], pre, mo.ckpt, ckpt_src))
+    if values['gpu_workers'] is not None:
+        nw = '%d GPU worker(s)' % values['gpu_workers']
+    elif mo.device.startswith('cuda'):
+        nw = 'GPU workers sized at start'
+    else:
+        nw = '1 model worker (CPU)'
+    _log('device %s%s, %s, %s, %d pre-processing workers, checkpoint %s (%s)' % (
+        mo.device, ' (auto)' if device == 'auto' else '', _thr_text(kept, line), nw, pre, mo.ckpt, ckpt_src))
     if mo.input_size == 'native':
         _log('WARNING: input_size native / tile is ' + EXPERIMENTAL)
     return Engine(mo, gpu_workers=values['gpu_workers'], gpu_mem_budget=values['gpu_mem_budget'], pre_workers=pre,

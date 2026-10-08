@@ -18,7 +18,7 @@
 # tile_overlap = 128        # overlap of neighbouring crops in px (with tile)
 # all_queries = false       # true: switch the kept-queries mode off and return all 100 queries per image, as
                             # upstream (validation only: same lines, ~4x more GPU time, up to ~12 GB per GPU worker;
-                            # --threshold is then not allowed)
+                            # --threshold is still the line threshold)
 # msda = "auto"             # MultiScaleDeformableAttention path on a GPU: "auto", "compiled" or "pytorch"
                             # (debugging only; default: env LINEFORMER_MSDA, else "auto")
 
