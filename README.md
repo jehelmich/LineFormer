@@ -41,7 +41,8 @@ lineformer batch --list images.txt --out out/ [--masks]   # one job; GPU workers
 lineformer serve --port 8775                              # a server that owns the GPU
 ```
 
-Options of every form: `--threshold` (default 0.3), `--masks`, `--force`, `--cpu` (default: the GPU if PyTorch sees
+Options of every form: `--threshold` (the score a line needs, default 0.3 as upstream; lower values also return
+fainter, less certain lines), `--masks`, `--force`, `--cpu` (default: the GPU if PyTorch sees
 one); everything else (model config, workers, threads, memory budget, ...) goes into a settings file, `--settings
 FILE.toml` ([lineformer.example.toml](lineformer.example.toml) lists every key with its default). The checkpoint is
 found at `--ckpt FILE`, `$LINEFORMER_CKPT`, `<checkout>/iter_3000.pth` or `~/.cache/lineformer/iter_3000.pth`.

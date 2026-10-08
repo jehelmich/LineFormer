@@ -116,10 +116,11 @@ lineformer serve    [--port 8775] [--exit-on-failure] [--threshold T] [--masks] 
 ```
 
 * Device: the GPU (`cuda:0`, ROCm too) if PyTorch sees one, else the CPU; `--cpu` forces the CPU.
-* `--threshold T` (default 0.3): the kept-queries mode. Only the instances whose class score reaches T are
-  post-processed and returned (~1 GB per GPU worker instead of ~12 GB); a line also needs a final score (class x
-  mask score) > 0.3, so T <= 0.3 gives the same lines as all queries, a lower T keeps lower-scoring instances in the
-  `.npz` outputs, and T > 0.3 drops lines whose class score is below T.
+* `--threshold T`: the score a line needs to be reported (default 0.3, as upstream); lower values also return
+  fainter, less certain lines. The lines are the instances with final score (class x mask score) > T; only the
+  queries whose class score reaches T are post-processed (the kept-queries mode: the same lines as all queries,
+  ~1 GB per GPU worker instead of ~12 GB). T is part of the outputs' fingerprint: a rerun with another T into the
+  same directory fails those images unless `--force`.
 * `--masks` (batch, serve): also write `<id>.masks.npz` and `<id>.instances.npz`; for the single process the masks
   of the instances behind the lines.
 * Everything else goes into a settings file, `--settings FILE.toml`: [lineformer.example.toml](../lineformer.example.toml)

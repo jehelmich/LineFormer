@@ -187,7 +187,8 @@ post-processing-bound (2.0 images/s). `tools/benchmark.py` measures the engine o
 * All results are in-sample, on one GPU (RX 7900 XTX), ROCm 7.2 and WSL2. Native Linux (without the WSL
   `libhsa-runtime64.so` swap the install script makes) and NVIDIA GPUs are untested.
 * The kept-queries mode drops instances whose class score is below its threshold; code that reads low-scoring
-  instances needs `all_queries = true` in the settings file (or a lower `--threshold`).
+  instances needs `all_queries = true` in the settings file, or a lower `--threshold` (which also lowers the line
+  threshold, see [Release validation](#release-validation-v030), item 8).
 
 ## Line order (v0.3.0)
 
@@ -211,8 +212,10 @@ per chart; results are best near that scale, which the default (`config`, fit 51
 Two runs, both on the current stack of [Environment](#environment), on the machine above while it was shared:
 
 * run R1 on commit `c1efc5e` (the engine before the small command line): items 3 and 4;
-* run R2 on commit `6463bcb` (the small command line, automatic sizing and the out-of-memory back-off; the commits
-  after it change documentation only): items 1, 2, 5, 6 and 7. The manifests say `git_dirty` true: the working
+* run R2 on commit `6463bcb` (the small command line, automatic sizing and the out-of-memory back-off): items 1,
+  2, 5, 6 and 7;
+* run R3 on commit `a08ecfe` (`--threshold` as the line threshold; the commits after it change documentation
+  only): item 8. The manifests say `git_dirty` true: the working
   tree held the uncommitted version and documentation edits of the release.
 
 1. Tests (R2): `python -m pytest` 80 passed, 0 skipped; `python tests/run_all.py` 80 passed, 0 failed, 0 skipped;
@@ -265,6 +268,14 @@ Two runs, both on the current stack of [Environment](#environment), on the machi
 7. CPU (R2): `lineformer batch --cpu --masks` on 3 of the images of item 3: lines, masks, boxes, labels and scores
    identical to the CPU run of R1 on 3/3 (bit for bit); the single process `lineformer --cpu` on the demo image:
    3 lines of 621 points.
+8. `--threshold` as the line threshold (R3; tests: `python -m pytest` 81 passed, ruff clean). The engine with the
+   default T = 0.3 on the 72 images (1 GPU worker, auto-sized) against R2's run of item 2: `lines` identical on
+   72/72 (byte for byte as JSON), masks, box coordinates and labels identical on 72/72, scores identical on 50/72
+   (max difference 1.3e-6, GPU noise); the fingerprint is unchanged (`kept_thr` 0.3, `line_thr` 0.3), and a rerun
+   over R2's outputs skipped them as done. At T = 0.1 (a report, not an acceptance): 135 lines instead of 125, the
+   10 extra lines on 8 of the 72 images, at instance scores 0.104-0.229; every line of T = 0.3 is present and
+   unchanged. A rerun at T = 0.1 over outputs made at 0.3 fails those images ("other model options (kept_thr,
+   line_thr differ)") unless `--force`. In-sample; whether the extra lines are real curves was not checked.
 
 ## Release check (v0.2.0)
 

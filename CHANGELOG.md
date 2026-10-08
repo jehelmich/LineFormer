@@ -8,8 +8,15 @@
 - A small interface: `lineformer IMAGE... | --list FILE --out DIR [--threshold T] [--masks] [--force] [--cpu]
   [--settings FILE.toml]`, the same for `lineformer batch`, and `lineformer serve [--port] [--exit-on-failure]
   [--threshold] [--masks] [--cpu] [--settings]`. `--help` shows only these.
-- `--threshold` is the former `--kept-thr` (default 0.3, same semantics: the class-score threshold of the
-  kept-queries mode; a line still needs a final score > 0.3). `--masks` of batch / serve now also writes
+- `--threshold T` is the score a line needs to be reported (default 0.3, as upstream; lower values also return
+  fainter, less certain lines): the lines are the instances with final score > T (`ModelOptions.line_thr`, which
+  replaces the 0.3 that `infer.get_dataseries` passes to `do_instance`; `get_dataseries` itself is unchanged), and
+  T is also the class-score threshold of the kept-queries mode (exact: final score <= class score). It replaces
+  `--kept-thr`, which set only the kept-queries threshold (lines stayed at 0.3). With `all_queries` the kept mode
+  is off and T stays the line threshold. T is in the output fingerprint (`kept_thr`, `line_thr`): outputs made at
+  0.3 by earlier engines are still skipped as done at T = 0.3; at another T they fail unless `--force`. On the 72
+  test images T = 0.1 returned 135 lines instead of 125 (10 more, on 8 images, scores 0.10-0.23) with all 125
+  lines of T = 0.3 unchanged. `--masks` of batch / serve now also writes
   `<id>.instances.npz` (what `--instances` wrote). `--cpu` replaces `--device cpu`; the default stays automatic.
   `serve --masks` makes every job write the masks and instances.
 - Settings file (`--settings FILE.toml`, read with `tomllib`; `lineformer.example.toml` lists every key with its
