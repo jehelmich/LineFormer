@@ -16,6 +16,10 @@
   wrote; for skipped images the existing `<id>.json`), the MSDA mode asked for (`msda`, `msda_env`) beside the
   path taken, and the versions of torchvision, scipy, scikit-image, matplotlib and the OpenCV wheel. A failed
   manifest write leaves the previous manifest and no temp file.
+- `lineformer serve --exit-on-failure`: when the engine fails (models do not load, a GPU worker dies or raises,
+  out of memory) the server marks its running jobs failed, writes their manifests and exits with code 2 instead of
+  staying up and answering 503. Default unchanged. `serve()` restores the previous signal handlers on return, and
+  `--ready-file` gives the bound port when `--port 0` picks one.
 
 ### Compatibility
 - No compiler needed: `third_party/mmcv` vendors the pure-Python part of mmcv 1.7.2 that inference loads (148

@@ -32,6 +32,12 @@ directory. Every job writes <out>/job.json (lineformer_jobs.py describes the fil
 Shutdown: SIGINT / SIGTERM (to the server process) stop accepting jobs (503), let in-flight images finish
 (--drain-timeout), end unfinished jobs "interrupted" (manifests written; resubmitting the same job skips what is
 done), then stop the workers and the HTTP server. A second signal abandons in-flight images at once.
+
+Engine failure (a model that does not load, a GPU worker that dies or raises, out of device memory): the engine
+ends every active job "failed" (manifests written) and accepts no more jobs. By default the server stays up and
+answers 503 (GET /health says state "failed"), so a caller can read the error; it exits only on a signal (code 2).
+With --exit-on-failure the server stops at once and exits with code 2 (also when the models fail to load), for a
+supervisor that restarts it.
 The server binds 127.0.0.1 by default; it has no authentication, so do not bind it to a public interface.
 """
 from __future__ import annotations
@@ -173,12 +179,26 @@ class Server(ThreadingHTTPServer):
         self.verbose = verbose
 
 
-def serve(engine, host='127.0.0.1', port=8775, drain_timeout=600.0, verbose=False, ready_file=None):
-    """Start the engine (if not started), serve until SIGINT / SIGTERM, then shut down. Returns an exit code."""
+def serve(engine, host='127.0.0.1', port=8775, drain_timeout=600.0, verbose=False, ready_file=None,
+          exit_on_failure=False):
+    """Start the engine (if not started), serve until SIGINT / SIGTERM, then shut down. Returns an exit code:
+    0 after a signal, 2 if the engine failed. exit_on_failure: a failure of the engine (model loading, a GPU worker
+    that dies or fails, out of memory) stops the server at once with 2 instead of leaving it up answering 503.
+    The signal handlers in place before are restored on return."""
+    if exit_on_failure and getattr(engine, 'failed_event', None) is None:
+        raise ValueError('exit_on_failure needs an engine with failed_event')
     httpd = Server((host, port), engine, verbose=verbose)  # bind first: a busy port fails before models load
-    if engine.state == 'created':
-        engine.start()
+    port = httpd.server_address[1]  # the bound port (port 0 picks a free one)
     log = engine.log
+    if engine.state == 'created':
+        try:
+            engine.start()
+        except EngineFailed as e:
+            httpd.server_close()
+            if not exit_on_failure:
+                raise
+            log('engine failed while starting; exiting (--exit-on-failure): %s' % e)
+            return 2
     stopping = {'n': 0}
 
     def stop_all():
@@ -194,16 +214,30 @@ def serve(engine, host='127.0.0.1', port=8775, drain_timeout=600.0, verbose=Fals
             log('signal %d again: abandoning in-flight images' % signum)
             engine._abandon.set()
 
+    def exit_when_failed():
+        engine.failed_event.wait()
+        # the engine has ended its active jobs "failed" and written their manifests (Engine._fail)
+        log('engine failed; stopping the server (--exit-on-failure): %s' % engine.error)
+        engine.shutdown(timeout=0, abandon=True)
+        httpd.shutdown()
+
+    old_handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
-    log('serving on http://%s:%d (GET /health, POST /jobs)' % (host, port))
-    if ready_file:
-        jobs.write_json_atomic(ready_file, {'url': 'http://%s:%d' % (host, port), 'time': time.time()})
     try:
-        httpd.serve_forever(poll_interval=0.5)
+        if exit_on_failure:
+            threading.Thread(target=exit_when_failed, name='lineformer-exit-on-failure', daemon=True).start()
+        log('serving on http://%s:%d (GET /health, POST /jobs)' % (host, port))
+        if ready_file:
+            jobs.write_json_atomic(ready_file, {'url': 'http://%s:%d' % (host, port), 'time': time.time()})
+        try:
+            httpd.serve_forever(poll_interval=0.5)
+        finally:
+            httpd.server_close()
+        if engine.state not in ('stopped', 'failed'):
+            engine.shutdown(timeout=drain_timeout)
     finally:
-        httpd.server_close()
-    if engine.state not in ('stopped', 'failed'):
-        engine.shutdown(timeout=drain_timeout)
+        for s, h in old_handlers.items():
+            signal.signal(s, h)
     log('server stopped (engine %s)' % engine.state)
     return 2 if engine.state == 'failed' else 0

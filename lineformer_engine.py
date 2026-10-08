@@ -789,6 +789,7 @@ class Engine:
         self._threads = []
         self._abandon = threading.Event()
         self._stopped = threading.Event()
+        self.failed_event = threading.Event()  # set when the engine fails (state 'failed'); lineformer_serve waits on it
         self._stopping_workers = False
         self._job_seq = 0
         self.engine_info = None
@@ -1008,6 +1009,7 @@ class Engine:
         self._write_manifests(force=True)
         self.cond.notify_all()
         threading.Thread(target=self._kill_all, daemon=True).start()
+        self.failed_event.set()
 
     # ---------------------------------------------------------- threads
     def _feeder(self):

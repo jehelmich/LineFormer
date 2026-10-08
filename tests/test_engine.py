@@ -463,6 +463,124 @@ def test_client_against_stub_server():
     _raises(client.LineFormerError, lf.health)  # server gone: a clear error, not a hang
 
 
+# ------------------------------------------------------------------ engine failure and serve --exit-on-failure
+
+def test_engine_fail_marks_jobs_and_sets_event():
+    with tempfile.TemporaryDirectory() as d:
+        ck = Path(d) / 'm.pth'
+        ck.write_bytes(b'0')
+        eng = engine.Engine(engine.ModelOptions(ckpt=str(ck), device='cpu'), log=lambda *a: None)
+        jid = eng.submit([str(Path(d) / 'a.png'), str(Path(d) / 'b.png')], str(Path(d) / 'out'))
+        assert not eng.failed_event.is_set()
+        with eng.cond:
+            eng._fail('GPU worker 0 (pid 1) died')
+        assert eng.failed_event.is_set() and eng.state == 'failed'
+        m = json.loads((Path(d) / 'out' / 'job.json').read_text())
+        assert m['job'] == jid and m['status'] == 'failed' and 'died' in m['error']
+        assert m['counts']['pending'] == 2
+        _raises(engine.EngineFailed, eng.submit, [str(Path(d) / 'c.png')], str(Path(d) / 'out2'))
+
+
+class FailingStub(StubEngine):
+    """StubEngine with the engine's start / shutdown / failure surface."""
+
+    def __init__(self, fail_start=False):
+        super().__init__()
+        self.state = 'created'
+        self.error = None
+        self.fail_start = fail_start
+        self.failed_event = threading.Event()
+        self._abandon = threading.Event()
+        self.shutdowns = []
+        self.log = lambda *a: None
+
+    def start(self):
+        if self.fail_start:
+            self.state, self.error = 'failed', 'checkpoint does not load'
+            self.failed_event.set()
+            raise engine.EngineFailed(self.error)
+        self.state = 'running'
+
+    def fail(self, msg):
+        with self.lock:
+            self.state, self.error = 'failed', msg
+            for j in self.sched.active():
+                j.stop('failed', msg)
+            self.failed_event.set()
+
+    def shutdown(self, timeout=600.0, abandon=False):
+        self.shutdowns.append(abandon)
+        if self.state != 'failed':
+            self.state = 'stopped'
+
+
+def _serve_in_main_thread(eng, exit_on_failure, after_ready, d):
+    """Run lineformer_serve.serve in this (main) thread; after_ready(client) runs in a helper thread once the
+    server is up. A watchdog SIGTERM after 30 s ends a server that does not stop. -> (exit code, seconds)."""
+    import signal
+    import lineformer_serve
+    ready = Path(d) / 'ready.json'
+
+    def helper():
+        for _ in range(200):
+            if ready.exists():
+                break
+            time.sleep(0.05)
+        after_ready(client.LineFormerClient(json.loads(ready.read_text())['url'], timeout=5))
+
+    watchdog = threading.Timer(30.0, os.kill, (os.getpid(), signal.SIGTERM))
+    watchdog.start()
+    threading.Thread(target=helper, daemon=True).start()
+    h_before = signal.getsignal(signal.SIGTERM)
+    t0 = time.time()
+    try:
+        code = lineformer_serve.serve(eng, port=0, ready_file=str(ready), exit_on_failure=exit_on_failure)
+    finally:
+        watchdog.cancel()
+    secs = time.time() - t0
+    assert signal.getsignal(signal.SIGTERM) is h_before  # handlers restored
+    return code, secs
+
+
+def test_serve_exit_on_failure():
+    with tempfile.TemporaryDirectory() as d:
+        eng = FailingStub()
+        seen = {}
+
+        def after_ready(lf):
+            seen['job'] = lf.submit(['/img/a.png'], os.path.join(d, 'o1'))
+            eng.fail('GPU worker 0 (pid 1) died')
+
+        code, secs = _serve_in_main_thread(eng, True, after_ready, d)
+        assert code == 2 and secs < 20, (code, secs)  # stopped by the failure, not by the watchdog
+        assert eng.sched.jobs[seen['job']].status == 'failed'
+        assert eng.shutdowns == [True]
+
+
+def test_serve_stays_up_on_failure_by_default():
+    import signal
+    with tempfile.TemporaryDirectory() as d:
+        eng = FailingStub()
+        seen = {}
+
+        def after_ready(lf):
+            eng.fail('GPU worker 0 (pid 1) died')
+            time.sleep(1.0)
+            seen['health'] = lf.health()  # still answering after the failure
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        code, secs = _serve_in_main_thread(eng, False, after_ready, d)
+        assert code == 2 and secs < 20, (code, secs)
+        assert seen['health']['state'] == 'failed'
+
+
+def test_serve_exit_on_failure_at_model_loading():
+    import lineformer_serve
+    assert lineformer_serve.serve(FailingStub(fail_start=True), port=0, exit_on_failure=True) == 2
+    _raises(engine.EngineFailed, lineformer_serve.serve, FailingStub(fail_start=True), port=0)  # default: raises
+    _raises(ValueError, lineformer_serve.serve, StubEngine(), port=0, exit_on_failure=True)
+
+
 if __name__ == '__main__':
     n = 0
     for name, fn in sorted(globals().items()):

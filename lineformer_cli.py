@@ -320,11 +320,15 @@ def main_serve(argv):
                     help='on SIGINT/SIGTERM, seconds to let in-flight images finish')
     ap.add_argument('--ready-file', type=Path, default=None, help='write {"url": ...} here once serving')
     ap.add_argument('--verbose', action='store_true', help='log every HTTP request')
+    ap.add_argument('--exit-on-failure', action='store_true',
+                    help='exit with code 2 as soon as the engine fails (models do not load, a GPU worker dies, out '
+                         'of memory; running jobs are marked failed first) instead of staying up and answering 503')
     _engine_args(ap)
     a = ap.parse_args(argv)
     eng = _make_engine(a, ap)
     return lineformer_serve.serve(eng, host=a.host, port=a.port, drain_timeout=a.drain_timeout, verbose=a.verbose,
-                                  ready_file=str(a.ready_file) if a.ready_file else None)
+                                  ready_file=str(a.ready_file) if a.ready_file else None,
+                                  exit_on_failure=a.exit_on_failure)
 
 
 if __name__ == '__main__':

@@ -150,7 +150,9 @@ or `lineformer-client submit --list images.txt --out /abs/out --wait`. The HTTP 
 `GET /jobs/<id>`, `POST /jobs/<id>/cancel`, `GET /jobs`, `GET /health`) is described in `lineformer_serve.py`.
 Model options (input size, kept threshold, tiling, device) are per server: a job that needs others needs a second
 server on another port. SIGTERM / Ctrl-C drains (in-flight images finish, unfinished jobs end "interrupted";
-resubmitting skips what is done). The server binds 127.0.0.1 and has no authentication.
+resubmitting skips what is done). If the engine fails (models do not load, a GPU worker dies, out of memory), its
+running jobs end "failed" and the server answers 503 until stopped; `--exit-on-failure` makes it exit at once
+with code 2 instead, for a supervisor that restarts it. The server binds 127.0.0.1 and has no authentication.
 
 Recommended settings: `--gpu-workers 2` (measured ~20 images/s on the RX 7900 XTX with 8 pre-processing workers,
 the default on a machine with >= 24 CPUs: `min(8, max(2, CPUs // 3))`); `--gpu-mem-budget` (default 0.85 of the
