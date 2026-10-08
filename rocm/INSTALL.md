@@ -117,9 +117,12 @@ $VENV/bin/lineformer batch --ckpt iter_3000.pth --list images.txt --out out/ --g
 
 Per image `out/<id>.json` (`lines` as `get_dataseries`, image path and sha256, the options' fingerprint, timings),
 with `--instances` `<id>.instances.npz` (boxes N x 5 with scores, labels; with the default kept mode only the kept
-queries) and with `--masks` `<id>.masks.npz` (packed masks of the same N instances); `out/job.json` is the manifest
-(options, versions, MSDA path, per-image status and timings, errors). Ids are the file stems unless given
-(`--ids parent_stem` for `<dir>__<stem>`); two different images with one id fail the second one, never overwrite.
+queries) and with `--masks` `<id>.masks.npz` (packed masks of the same N instances). Lines and instances are in a
+geometric order (lines by leftmost x, mean y, score; line *i* = instance *i*), the same on CPU and GPU.
+`out/job.json` is the manifest of the job (fork version and git commit, package versions, options, MSDA path,
+workers, per-image status, timings and output sha256, start and end times, failures). Ids are the file stems
+unless given (`--ids parent_stem` for `<dir>__<stem>`); two different images with one id fail the second one,
+never overwrite.
 Writes are atomic and a rerun skips what is done (`--force` recomputes). An unreadable image fails alone; out of
 GPU memory or a dead worker ends the run. Exit code 0 all done, 1 some images failed, 2 engine failure, 130
 interrupted (Ctrl-C lets in-flight images finish; rerun to resume). `lineformer_jobs.py` has the exact rules.

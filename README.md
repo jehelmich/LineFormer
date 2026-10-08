@@ -49,7 +49,8 @@ Defaults: `--device auto` (GPU if PyTorch sees one, else CPU), kept-queries mode
 model's own order differs between CPU and GPU): lines by leftmost x, then mean y, then score; line *i* is instance
 *i* of `<id>.instances.npz` / `<id>.masks.npz`, and the instances without a line follow (details in
 `lineformer_jobs.py`). `infer.get_dataseries` and the single-process `lineformer` keep the model's order, as
-upstream.
+upstream. Every job writes a manifest `<out>/job.json` (fork version and git commit, package versions, options,
+per-image status and output sha256, start and end times, failures).
 
 * [rocm/INSTALL.md](rocm/INSTALL.md): install, update, environment check, use (batch, serve, client, Python)
 * [docs/VALIDATION.md](docs/VALIDATION.md): how equivalence and speed were measured, and the limits

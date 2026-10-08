@@ -10,6 +10,12 @@
   instead of the model's order, which differs between CPU and GPU. Each `<id>.json` says `"order": "geometric"`.
   The order is not part of the skip-if-done fingerprint: outputs of earlier engines (model order, no `"order"`)
   are still skipped as done. `infer.get_dataseries` is unchanged.
+- Job manifest (`<out>/job.json`, `"manifest_version": 2`, written by batch and serve jobs alike): adds `fork`
+  (version, git commit, `git_dirty`), `times_utc` (ISO 8601 created / started / finished / written), `failures`
+  (every failed image with its full error), per image `outputs_sha256` (the `<id>.json` and each `.npz` the job
+  wrote; for skipped images the existing `<id>.json`), the MSDA mode asked for (`msda`, `msda_env`) beside the
+  path taken, and the versions of torchvision, scipy, scikit-image, matplotlib and the OpenCV wheel. A failed
+  manifest write leaves the previous manifest and no temp file.
 
 ### Compatibility
 - No compiler needed: `third_party/mmcv` vendors the pure-Python part of mmcv 1.7.2 that inference loads (148

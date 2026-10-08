@@ -26,7 +26,7 @@ Outputs per image in the output directory (each written atomically: temp file + 
                        instance the model returned (all 100 queries, or only the kept ones in kept-queries mode)
   <id>.masks.npz       (option "masks") masks_packed = np.packbits(masks.reshape(-1)), mask_shape = (N, H, W):
                        the masks of the same N instances, in the same order
-  job.json             the manifest of the last job that wrote into the directory
+  job.json             the manifest of the last job that wrote into the directory (see "Manifest" below)
 
 Order ("order": "geometric"): the model returns its instances in an order that differs between CPU and GPU
 (mmdet's unsorted top-k), so the engine sorts them. Lines are sorted by (leftmost x of the line's points, mean y
@@ -42,6 +42,23 @@ fingerprint (engine version, checkpoint and config sha256, input size, kept thre
 optional outputs exist. The same id from ANOTHER image path fails the image, with or without force (outputs are
 never overwritten by a different image); a different fingerprint fails the image unless force.
 
+Manifest (<out>/job.json, "manifest_version": 2): written atomically by every job, `lineformer batch` and
+`lineformer serve` alike, when it is queued, every ~2 s while it changes, and when it ends (also when the engine
+fails or stops). It holds
+  * the job: "job", "name", "status", "error", "out", "outputs", "force", "priority", "counts", "timing" (epoch
+    times created / started / finished, wall_s, images_per_s, latency and per-stage statistics), "times_utc" (the
+    same times as ISO 8601 UTC, and when this manifest was written);
+  * "fork": the lineformer version, its git commit and whether tracked files differed from it ("git_dirty"; null
+    when the code does not run from a git checkout);
+  * "engine": the package versions (python, torch, torchvision, mmcv, mmdet, numpy, OpenCV, scipy, scikit-image,
+    matplotlib), the model options (checkpoint, config, device, MSDA mode asked for and the path the workers took,
+    kept threshold, input size, tiling), the fingerprint, the order, the worker counts, threads, memory budget, the
+    GPU workers' pids, devices and memory caps, and their last memory statistics;
+  * "images": per image idx, id, path, status, error, note, image_sha256, shape, n_lines, n_instances, gpu_worker,
+    timings, t_fed / t_done and "outputs_sha256" (sha256 of the <id>.json and of each .npz this job wrote; for a
+    skipped image only the existing <id>.json);
+  * "errors" (the first 20, shortened) and "failures" (every failed image with its full error).
+
 Image states: pending -> running -> done | failed; skipped, duplicate (decided at submit); cancelled (cancel);
 pending/running left when the engine stops are reported as such in an "interrupted" or "failed" job.
 Job states: queued, running, cancelling, done, done_with_errors, cancelled, interrupted, failed.
@@ -50,6 +67,7 @@ Python 3.8 compatible.
 from __future__ import annotations
 
 import collections
+import hashlib
 import json
 import os
 import threading
@@ -59,6 +77,7 @@ from pathlib import Path
 ENGINE_VERSION = '1'
 ORDER = 'geometric'  # the "order" of <id>.json: lines and instances sorted as described in the module docstring
 MANIFEST = 'job.json'
+MANIFEST_VERSION = 2  # 1 (v0.2.0) had no manifest_version, fork, times_utc, failures, outputs_sha256
 ID_SCHEMES = ('stem', 'parent_stem')
 OUTPUT_KINDS = ('instances', 'masks')
 FINAL_JOB_STATES = ('done', 'done_with_errors', 'cancelled', 'interrupted', 'failed')
@@ -174,11 +193,20 @@ def normalize_items(images, scheme='stem', require_absolute=False):
 # ------------------------------------------------------------------ atomic writes and skip-if-done
 
 def write_json_atomic(path, obj, indent=None):
+    """Write obj as JSON to path: temp file + rename, so a reader sees the old or the new file, never a part. On an
+    error (e.g. an object JSON cannot encode) the temp file is removed and the old file stays."""
     path = str(path)
-    tmp = '%s.tmp%d' % (path, os.getpid())
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(obj, f, indent=indent)
-    os.replace(tmp, path)
+    tmp = '%s.tmp%d.%d' % (path, os.getpid(), threading.get_ident())
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(obj, f, indent=indent)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def fingerprint_diff(a, b):
@@ -192,8 +220,8 @@ def done_state(rec, out, fingerprint, outputs, force=False):
     if not p['json'].exists():
         return rec
     try:
-        with open(str(p['json']), encoding='utf-8') as f:
-            old = json.load(f)
+        raw = p['json'].read_bytes()
+        old = json.loads(raw.decode('utf-8'))
     except Exception as e:  # a JSON is written atomically, so this is not a half-written output
         rec['note'] = 'existing %s unreadable (%s): recomputed' % (p['json'].name, e)
         return rec
@@ -216,7 +244,22 @@ def done_state(rec, out, fingerprint, outputs, force=False):
         rec['note'] = 'done earlier without %s: recomputed' % ', '.join(missing)
         return rec
     rec['status'] = 'skipped'
+    rec['outputs_sha256'] = {'json': hashlib.sha256(raw).hexdigest()}  # the .npz of a skipped image: not re-read
     return rec
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(str(path), 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def outputs_sha256(out, iid, kinds):
+    """sha256 of the image's <id>.json and of the optional outputs in kinds -> {'json': ..., kind: ...}."""
+    p = output_paths(out, iid)
+    return {k: sha256_file(p[k]) for k in ('json',) + tuple(kinds)}
 
 
 # ------------------------------------------------------------------ jobs
@@ -353,9 +396,18 @@ class Job:
                            for r in self.records if r['status'] == 'failed'][:20]}
 
     def manifest(self, engine_info):
-        m = self.summary()
+        """The job manifest (module docstring, "Manifest"): summary, fork, times, engine, images, failures."""
+        m = {'manifest_version': MANIFEST_VERSION}
+        m.update(self.summary())
+        v = (engine_info or {}).get('versions') or {}
+        m['fork'] = {'version': v.get('lineformer'), 'git_commit': v.get('lineformer_git'),
+                     'git_dirty': v.get('lineformer_git_dirty')}
+        m['times_utc'] = {k: _utc(getattr(self, k)) for k in ('created', 'started', 'finished')}
+        m['times_utc']['written'] = _utc(time.time())
         m['engine'] = engine_info
         m['images'] = [_public(r) for r in self.records]
+        m['failures'] = [{'idx': r['idx'], 'id': r['id'], 'path': r['path'], 'error': r.get('error')}
+                         for r in self.records if r['status'] == 'failed']
         return m
 
     def write_manifest(self, engine_info):
@@ -365,11 +417,15 @@ class Job:
 
 
 _PUBLIC = ('idx', 'id', 'path', 'status', 'error', 'note', 'image_sha256', 'shape', 'n_lines', 'n_instances',
-           'gpu_worker', 'timings', 't_fed', 't_done')
+           'gpu_worker', 'timings', 't_fed', 't_done', 'outputs_sha256')
 
 
 def _public(r):
     return {k: r[k] for k in _PUBLIC if k in r}
+
+
+def _utc(t):
+    return None if t is None else time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(t))
 
 
 def _short(err, n=2000):

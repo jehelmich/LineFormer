@@ -454,21 +454,44 @@ def fingerprint(mo, ckpt_sha256, config_sha256):
     return fp
 
 
+PACKAGES = ('lineformer', 'torch', 'torchvision', 'mmcv', 'mmdet', 'numpy', 'opencv-python',
+            'opencv-python-headless', 'scipy', 'scikit-image', 'matplotlib')
+
+
+def git_state(path=HERE):
+    """-> {'commit': HEAD or None, 'dirty': True/False (tracked files modified) or None} of the checkout at path.
+    None when path is not a git checkout (e.g. an installed copy) or git is missing."""
+    import subprocess
+
+    def run(*args):
+        r = subprocess.run(['git', '-C', str(path)] + list(args), capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr)
+        return r.stdout.strip()
+    try:
+        commit = run('rev-parse', 'HEAD') or None
+    except Exception:
+        return {'commit': None, 'dirty': None}
+    try:
+        dirty = bool(run('status', '--porcelain', '--untracked-files=no'))
+    except Exception:
+        dirty = None
+    return {'commit': commit, 'dirty': dirty}
+
+
 def versions():
-    """Package versions without importing torch / mmcv in this process."""
+    """Package versions without importing torch / mmcv in this process; the fork's git commit."""
     from importlib import metadata
     out = {'python': sys.version.split()[0], 'platform': platform.platform(), 'engine': jobs.ENGINE_VERSION}
-    for name in ('lineformer', 'torch', 'mmcv', 'mmdet', 'numpy', 'opencv-python'):
+    for name in PACKAGES:
         try:
             out[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            out[name] = None  # not installed (e.g. one of the two OpenCV wheels)
         except Exception as e:
             out[name] = 'unavailable: %r' % e
-    try:
-        import subprocess
-        out['lineformer_git'] = subprocess.run(['git', '-C', str(HERE), 'rev-parse', 'HEAD'], capture_output=True,
-                                               text=True, timeout=10).stdout.strip() or None
-    except Exception:
-        out['lineformer_git'] = None
+    g = git_state()
+    out['lineformer_git'], out['lineformer_git_dirty'] = g['commit'], g['dirty']
     return out
 
 
@@ -716,6 +739,7 @@ def post_worker(mo, threads, post_q, done_q, stat_q=None):
             rec['t_post_end'] = time.time()
             obj['timings']['post_s'] = rec['t_post_end'] - rec['t_post_start']
             jobs.write_json_atomic(jpath, obj)
+            rec['outputs_sha256'] = jobs.outputs_sha256(rec['out'], rec['id'], obj['outputs'])
             rec['timings'] = obj['timings']
             rec['status'] = 'done'
         except Exception:
@@ -724,7 +748,7 @@ def post_worker(mo, threads, post_q, done_q, stat_q=None):
                 rec['error'] = traceback.format_exc()
         rec.setdefault('t_post_end', time.time())
         done_q.put({k: rec.get(k) for k in ('job', 'idx', 'status', 'error', 'image_sha256', 'shape', 'n_lines',
-                                            'n_instances', 'gpu_worker', 'timings') if k in rec})
+                                            'n_instances', 'gpu_worker', 'timings', 'outputs_sha256') if k in rec})
 
 
 # ================================================================== the engine (main process)
@@ -782,7 +806,8 @@ class Engine:
         self.versions = versions()
         self.engine_info = {
             'model_options': asdict(mo), 'fingerprint': self.fingerprint, 'versions': self.versions,
-            'device': mo.device, 'msda_path': None, 'kept_thr': mo.kept_thr, 'input_size': mo.input_size,
+            'device': mo.device, 'msda': mo.msda, 'msda_env': os.environ.get('LINEFORMER_MSDA'), 'msda_path': None,
+            'kept_thr': mo.kept_thr, 'input_size': mo.input_size,
             'tile': self.fingerprint['tile'], 'line_thr': LINE_THR, 'order': jobs.ORDER, 'gpu_workers': self.n_gpu,
             'pre_workers': self.n_pre, 'post_workers': self.n_post, 'gpu_mem_budget': self.budget_arg,
             'threads': self.threads, 'max_inflight': self.max_inflight, 'workers': None, 'pids': None}

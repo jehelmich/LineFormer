@@ -150,6 +150,82 @@ def test_job_lifecycle_and_manifest():
         assert j4.maybe_finish() and j4.status == 'done'
 
 
+def test_manifest_contents():
+    import hashlib
+    import re
+    with tempfile.TemporaryDirectory() as out:
+        recs = jobs.normalize_items(['/img/0.png', '/img/1.png'])
+        j = jobs.Job('j1', out, recs, outputs={'instances': True})
+        r0, r1 = j.next_record(), j.next_record()
+        j.finish_record({'idx': r0['idx'], 'status': 'done', 'outputs_sha256': {'json': 'a', 'instances': 'b'}})
+        j.finish_record({'idx': r1['idx'], 'status': 'failed', 'error': 'Traceback ...\n' + 'x' * 5000})
+        info = {'versions': {'lineformer': '0.2.0', 'lineformer_git': 'abc', 'lineformer_git_dirty': False},
+                'model_options': {'device': 'cuda:0'}}
+        j.write_manifest(info)
+        m = json.loads((Path(out) / 'job.json').read_text())
+        assert m['manifest_version'] == jobs.MANIFEST_VERSION == 2
+        assert m['fork'] == {'version': '0.2.0', 'git_commit': 'abc', 'git_dirty': False}
+        assert m['engine'] == info and m['status'] == 'done_with_errors'
+        iso = re.compile(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+        assert all(iso.match(m['times_utc'][k]) for k in ('created', 'started', 'finished', 'written'))
+        assert m['images'][0]['outputs_sha256'] == {'json': 'a', 'instances': 'b'}
+        assert m['failures'] == [{'idx': 1, 'id': '1', 'path': r1['path'], 'error': 'Traceback ...\n' + 'x' * 5000}]
+        assert len(m['errors'][0]['error']) < 5000  # the summary's short form
+        # atomic: an object that cannot be written leaves the old manifest and no temp file
+        _raises(TypeError, j.write_manifest, {'versions': {}, 'bad': object()})
+        assert json.loads((Path(out) / 'job.json').read_text()) == m
+        assert sorted(os.listdir(out)) == ['job.json']
+        # skip-if-done records the sha256 of the existing <id>.json
+        _write_done(out, 'a', '/img/a.png', {'engine': '1'})
+        rec = jobs.done_state({'idx': 0, 'id': 'a', 'path': '/img/a.png', 'status': 'pending'}, out,
+                              {'engine': '1'}, {})
+        want = hashlib.sha256((Path(out) / 'a.json').read_bytes()).hexdigest()
+        assert rec['status'] == 'skipped' and rec['outputs_sha256'] == {'json': want}
+        (Path(out) / 'a.instances.npz').write_bytes(b'npz')
+        assert jobs.outputs_sha256(out, 'a', ['instances']) == {
+            'json': want, 'instances': hashlib.sha256(b'npz').hexdigest()}
+
+
+def test_versions_and_git_state():
+    import subprocess
+    v = engine.versions()
+    for k in engine.PACKAGES + ('python', 'platform', 'engine', 'lineformer_git', 'lineformer_git_dirty'):
+        assert k in v, k
+    head = subprocess.run(['git', '-C', str(engine.HERE), 'rev-parse', 'HEAD'], capture_output=True, text=True)
+    if head.returncode == 0:  # running from a checkout
+        assert v['lineformer_git'] == head.stdout.strip() and v['lineformer_git_dirty'] in (True, False)
+    with tempfile.TemporaryDirectory() as d:
+        assert engine.git_state(d) == {'commit': None, 'dirty': None}
+
+
+def test_engine_job_manifest_without_workers():
+    """A job submitted to the engine (as batch and serve do) writes its manifest at once; a job whose images are
+    all done ends 'done' without any worker started, its manifest holding the fork and the model options."""
+    with tempfile.TemporaryDirectory() as d:
+        ck = Path(d) / 'm.pth'
+        ck.write_bytes(b'0')
+        out = Path(d) / 'out'
+        eng = engine.Engine(engine.ModelOptions(ckpt=str(ck), device='cpu', kept_thr=0.3), log=lambda *a: None)
+        eng.prepare()
+        out.mkdir()
+        _write_done(out, 'a', str(Path(d) / 'a.png'), eng.fingerprint)
+        jid = eng.submit([str(Path(d) / 'a.png'), str(Path(d) / 'b.png')], str(out))
+        m = json.loads((out / 'job.json').read_text())
+        assert m['job'] == jid and m['status'] == 'queued' and m['counts']['skipped'] == 1
+        assert m['engine']['model_options']['kept_thr'] == 0.3 and m['engine']['device'] == 'cpu'
+        assert m['engine']['order'] == 'geometric' and m['engine']['gpu_workers'] == 1
+        assert m['fork']['git_commit'] == eng.versions['lineformer_git']
+        assert m['images'][0]['outputs_sha256']['json']
+        _raises(jobs.OutDirBusy, eng.submit, [str(Path(d) / 'a.png')], str(out))  # the first job is active
+        out2 = Path(d) / 'out2'
+        out2.mkdir()
+        _write_done(out2, 'a', str(Path(d) / 'a.png'), eng.fingerprint)
+        jid2 = eng.submit([str(Path(d) / 'a.png')], str(out2))
+        m2 = json.loads((out2 / 'job.json').read_text())
+        assert m2['job'] == jid2 and m2['status'] == 'done' and m2['times_utc']['finished']
+        assert eng.state == 'prepared'  # no worker was started
+
+
 # ------------------------------------------------------------------ options
 
 def test_option_parsing():
