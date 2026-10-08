@@ -100,6 +100,64 @@ GPU only the scores move, within the GPU's run-to-run variation. Nothing had to 
 re-measured: the machine was shared with other GPU and CPU work during these runs; interleaved runs of the two
 stacks under the same load showed no difference beyond that noise.
 
+## Threshold sensitivity (unreleased)
+
+The acceptance compares instances with score >= 0.3, but no instance of the reference lies near 0.3 (lowest kept
+0.3214, highest dropped 0.2288), so "the same instances" was never tested at its own threshold. The runs that
+store all 100 queries per image (A; B = the v0.2.0 stack on CPU: Python 3.11, torch 2.14.1, mmcv-full with CPU
+ops; C = GPU, all queries, and its repeat C2) were matched again at lower thresholds, without new inference: per
+t in {0.05, 0.1, 0.15, 0.2, 0.25, 0.3}, the instances with score >= t of each run, matched one-to-one by mask IoU as
+`compare.py` does at 0.3. A flip is a pair (matched over all queries, IoU >= 0.5) whose scores lie on two sides of
+t. The kept-queries runs cannot take part (they hold no instance below a class score of 0.3).
+
+Instances with score >= t in A: 142 / 135 / 131 / 128 / 125 / 125. The real instances closest to each threshold:
+
+| t | instances within +-0.02 | closest to t (margin) |
+|---|---|---|
+| 0.05 | 12 | 0.0486, 0.0514 (0.0014) |
+| 0.1 | 7 | 0.0983 (0.0017) |
+| 0.15 | 2 | 0.1578 (0.0078) |
+| 0.2 | 4 | 0.1984 (0.0016) |
+| 0.25 | 0 | 0.2288 (0.0212) |
+| 0.3 | 0 | 0.3214 (0.0214) |
+
+Result, every pair at every threshold: the same instance counts on every image, 0 unmatched, 0 flips, every matched
+pair with IoU >= 0.98 and |dscore| <= 0.01.
+
+| pair | min IoU | max \|dscore\| (instances >= t) |
+|---|---|---|
+| A-C (GPU), t = 0.05 ... 0.3 | 0.9999 | 1.1e-5 |
+| C-C2 (GPU repeat) | 0.9999 (1.0 for t >= 0.1) | < 5e-7 |
+| A-B (CPU, v0.2.0 stack), t = 0.05 ... 0.2 | 0.9944 ... 0.9970 | 0.0030 |
+| A-B, t = 0.25 / 0.3 | 0.9978 | 7e-4 |
+
+What this shows: on the GPU the "same instances" holds down to 0.05 with clearance: at 0.05, 0.1 and 0.2 real
+instances lie 0.0014-0.0017 from t, and the largest A-C shift of any instance >= 0.05 is 1.1e-5, two orders of
+magnitude less. For B there were no flips either, but without that clearance: its largest shift (0.003, on an
+instance at 0.2288 in one image) exceeds the margins of the closest instances, so "no flip" for B at 0.05, 0.1 and
+0.2 is observed, not guaranteed by margin. What is not shown: 0.25 and 0.3 have no instance within 0.02, so the
+threshold 0.3 itself is still not stressed by a near-threshold instance; only 17 instances lie in [0.05, 0.3); the
+lines were not recomputed at the lower thresholds; in-sample, the same 72 images.
+
+## torch.compile (measured, not part of the fork)
+
+`torch.compile` of the Swin-T backbone was built and measured on the branch `torch-compile` (TorchInductor, Triton
+3.8 on ROCm; kept-queries mode on; 72 images with 23 distinct input shapes at the 512 fit). It is not merged:
+
+* Equivalent: engine, kept 0.3, compiled backbone, PASS 72/72 against A (min IoU 0.99995, max |dscore| 1.1e-5,
+  the figures of the uncompiled GPU runs); against the uncompiled kept GPU run masks bit-identical on 72/72 images,
+  scores within 8.8e-6, lines identical on 72/72.
+* No reliable speed gain: the backbone is ~13 ms of the ~50 ms GPU stage per image, so even a halved backbone gains
+  at most ~13 % of the GPU stage (an idle-GPU check on 3 images, not paired, saw ~10 %: 37-39 vs 43 ms). Under the shared load of
+  the measurement the paired comparisons overlapped (network per image, medians 568 vs 513 ms in one sitting, 269 vs
+  277 ms in another; `tools/benchmark.py` 2.8-4.2 vs 0.8-3.3 images/s with one worker).
+* Costs: 30-47 s of compilation per new input shape and per GPU worker with an empty cache (every new aspect ratio
+  is a new shape at the 512 fit), ~120 MB of on-disk cache per shape (2.8 GB for the 23); dynamic shapes are not
+  usable (932 s for the first shape, the second unfinished after 25 min); compiling more than the backbone costs
+  minutes per shape with 25-29 graph breaks (`.item()` in every MSDA call).
+
+Details in `git show torch-compile:docs/VALIDATION.md`.
+
 ## Speed
 
 Per image, 72 images, warm-up excluded, one machine; single runs, so differences of ~1 image/s are noise.
@@ -120,7 +178,8 @@ post-processing-bound (2.0 images/s). `tools/benchmark.py` measures the engine o
 ## Limits
 
 * No instance in the set has a score near the 0.3 threshold, so the set does not test how the stacks decide such
-  borderline cases.
+  borderline cases at 0.3; at lower thresholds (0.05-0.2), where such instances exist, no instance flipped
+  ([Threshold sensitivity](#threshold-sensitivity-unreleased)).
 * The model's order of instances, and so of lines, differs between CPU and GPU (`topk(sorted=False)` in mmdet).
   The engine (`lineformer batch` / `serve`) sorts them geometrically (since the unreleased version, see
   [Line order](#line-order-unreleased)); `infer.get_dataseries` and the single-process `lineformer` do not: match
@@ -138,13 +197,47 @@ run: in the model's order the lines of 44 of 72 images come in the same order; s
 key value moved between CPU and GPU on any line. The leftmost x ties exactly between two lines in 11 of the 34
 images with several lines (lines starting at the axis); the mean y then decides, and its smallest gap between two
 lines of an image is 3.2 px. A swap would need a line's leftmost x or mean y to move past another line's between
-runs; this set has no such case, so the margin of the key is not stressed by it.
+runs; this set has no such case, so the margin of the key is not stressed by it. The engine with the order, on CPU
+and on the GPU: see [Release validation](#release-validation-v030-unreleased), item 3.
 
 ## Input scale
 
 `--input-size native` and `--tile` are experimental. In an in-sample test on dense chart grids, native-resolution
 input made the model segment grid lines as data lines (precision 0.97 -> ~0.2). The model was trained at ~512 px
 per chart; results are best near that scale, which the default (`config`, fit 512 x 512) keeps.
+
+## Release validation (v0.3.0, unreleased)
+
+Run on the code of the release candidate (commit `c1efc5e`; the commits after it change documentation only), the
+current stack of [Environment](#environment), on the machine above while it was shared (see item 4):
+
+1. Tests: `python -m pytest` 64 passed, 0 skipped; `python tests/run_all.py` 64 passed, 0 failed, 0 skipped;
+   `ruff check` (ruff 0.16.10) clean.
+2. `lineformer batch` with the command-line defaults (device auto -> cuda:0, kept 0.3), 2 GPU workers,
+   `--gpu-mem-budget 3G`, `--instances --masks`, on the 72 images -> `to_harness.py` -> `compare.py`:
+
+   | against | PASS | min mask IoU | max \|dscore\| | lines identical (in order) | points within 1 px |
+   |---|---|---|---|---|---|
+   | reference A (CPU, original stack) | 72/72 | 0.99995 | 1.1e-5 | 48/72 images | all |
+   | the earlier kept GPU run | 72/72 | 1.0 | 1.3e-6 | 45/72 images | all |
+
+   Order-insensitive, against the earlier kept GPU run: masks identical on 72/72 images, box coordinates identical
+   on 72/72, scores identical on 51/72 (max difference 1.3e-6, the GPU's run-to-run variation), lines identical as
+   sets on 72/72. `compare.py` counts identical lines in order; the references keep the model's order, so that count
+   now measures the order: 48/72 against A (44/72 before the geometric order) and 45/72 against the GPU run. The
+   manifest names the commit (`git_dirty` false) and holds an output sha256 for every image.
+3. Line order, CPU against GPU: the same engine on CPU (`--device cpu`, kept 0.3) on 8 of the images (the 7
+   windows with 3-4 lines and the demo, 25 lines) against the GPU run of item 2: lines identical and in the same
+   order on 8/8 images, instances in the same order on 8/8 (masks identical position by position, scores within
+   7.2e-6). In the model's order the lines of these 8 images came in different orders on CPU (A) and GPU (8/8).
+4. Throughput, `tools/benchmark.py` on the 72 images (kept 0.3, `--gpu-mem-budget 3G`, 8 pre-processing workers,
+   3 timed passes): 1 GPU worker 7.29 / 1.47 / 3.67 images/s, 2 GPU workers 6.05 / 6.16 / 5.57 images/s; peak
+   allocated 479-480 MB, reserved 766-834 MB per worker. **Not a clean measurement**: no other process ran in WSL,
+   but Windows-side GPU work kept the host CPU at 95-100 % and the GPU busy (engine utilisation summed over engines
+   48-307 %, 17.3-20.9 GB of 24 GB device memory in use by others); the pre-processing median was 0.6-1.2 s per
+   image instead of ~0.2 s, so the rate measures the load, not the engine. The [Speed](#speed) table (idle machine,
+   v0.2.0 stack) stays the reference; this version adds per image a sort of a few lines and a sha256 over the
+   written files.
 
 ## Release check (v0.2.0)
 

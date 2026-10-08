@@ -55,6 +55,12 @@
 - `tests/test_model_cpu.py`: the model built from the config with random weights (no checkpoint), one forward and
   `get_dataseries` on the demo image on CPU, kept-queries mode off and on.
 
+### Documentation
+- `docs/VALIDATION.md`: threshold sensitivity (the "same instances" re-matched at 0.05-0.3 on the stored runs: 0
+  flips; on the GPU with clearance, on the v0.2.0 CPU stack observed only; 0.3 itself still not stressed), the
+  line order, torch.compile (measured on the unmerged branch `torch-compile`: equivalent, no reliable gain, 30-47 s
+  of compilation per input shape and worker; not part of the fork) and the release validation of this version.
+
 ## v0.2.0 (2026-10-07)
 
 First release of the fork, against upstream [TheJaeLal/LineFormer](https://github.com/TheJaeLal/LineFormer) commit
