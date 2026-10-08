@@ -182,7 +182,8 @@ def load(args, meta):
     meta["infer_msda_report"] = rep
     # kept-queries mode (kept_queries.py): None = off or not supported by the checkout
     meta["kept_queries_threshold"] = infer.get_kept_threshold() if hasattr(infer, "get_kept_threshold") else None
-    meta["torch_deterministic_algorithms"] = bool(getattr(torch, "are_deterministic_algorithms_enabled", lambda: None)())
+    meta["torch_deterministic_algorithms"] = bool(
+        getattr(torch, "are_deterministic_algorithms_enabled", lambda: None)())
     want_gpu = str(args.device).startswith("cuda")
     if want_gpu and not any(d.startswith("cuda") for d in devs):
         raise SystemExit("asked for %s but the model parameters are on %s" % (args.device, devs))

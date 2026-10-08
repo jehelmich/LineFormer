@@ -164,8 +164,8 @@ def _points_within(da, db, tol):
 
 def compare_dataseries(dsa, dsb, tol=1):
     from scipy.optimize import linear_sum_assignment
-    la = [_line_dict(l) for l in dsa]
-    lb = [_line_dict(l) for l in dsb]
+    la = [_line_dict(ln) for ln in dsa]
+    lb = [_line_dict(ln) for ln in dsb]
     na = [sum(len(v) for v in d.values()) for d in la]
     nb = [sum(len(v) for v in d.values()) for d in lb]
     cost = np.full((len(la), len(lb)), np.inf)

@@ -337,7 +337,9 @@ def summarise_profiler(prof, gpu, trace_path):
         dev_events = [e for e in events if getattr(e, "device_type", None) == dev_type.CUDA]
     res["n_device_events_total"] = len(dev_events)
     if gpu and not dev_events:
-        res["device_tracing"] = "no device events captured (e.g. ROCm under WSL has no kfd sysfs for roctracer); "                                 "kernel launches are counted from runtime API calls instead, device time unavailable"
+        res["device_tracing"] = ("no device events captured (e.g. ROCm under WSL has no kfd sysfs for roctracer); "
+                                 "kernel launches are counted from runtime API calls instead, device time "
+                                 "unavailable")
     rt = [e for e in events if any(t in e.name for t in ("LaunchKernel", "Memcpy", "Memset", "ModuleLaunch"))]
 
     def in_windows(e, ws):

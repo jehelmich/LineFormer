@@ -27,6 +27,20 @@ lineformer-client = "lineformer_client:main"
 py-modules = ["infer", "line_utils", "clean_chart", "msda_compat", "kept_queries", "lineformer_cli", "scale_compat",
               "tiling", "lineformer_engine", "lineformer_jobs", "lineformer_serve", "lineformer_client"]
 
+[tool.ruff]
+# Lint only the files this fork added (they carry the SPDX Apache-2.0 header). Upstream LineFormer files,
+# lineformer_swin_t_config.py (upstream), the vendored mmdetection/ and third_party/mmcv/ are neither linted nor
+# reformatted. Run `ruff check` from the repository root.
+include = ["kept_queries.py", "msda_compat.py", "scale_compat.py", "tiling.py", "lineformer_cli.py",
+           "lineformer_client.py", "lineformer_engine.py", "lineformer_jobs.py", "lineformer_serve.py",
+           "tests/**/*.py", "tools/benchmark.py", "tools/equivalence/**/*.py"]
+extend-exclude = ["mmdetection", "third_party"]
+line-length = 120
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests", "tools/equivalence/tests"]
 addopts = "-rs"

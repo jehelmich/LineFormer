@@ -43,7 +43,8 @@ lineformer serve --ckpt iter_3000.pth --port 8775 --gpu-workers 2               
 
 Defaults: `--device auto` (GPU if PyTorch sees one, else CPU), kept-queries mode on at 0.3 (`--all-queries` for all
 100 instances per image, as upstream). `--input-size native` and `--tile` are experimental (see
-[docs/VALIDATION.md](docs/VALIDATION.md#input-scale)). Tests: `python -m pytest` or `python tests/run_all.py`.
+[docs/VALIDATION.md](docs/VALIDATION.md#input-scale)). Tests: `python -m pytest` or `python tests/run_all.py`;
+lint: `ruff check` (the fork's own files only).
 
 `lineformer batch` and `lineformer serve` write the lines and instances in a deterministic geometric order (the
 model's own order differs between CPU and GPU): lines by leftmost x, then mean y, then score; line *i* is instance

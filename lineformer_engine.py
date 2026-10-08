@@ -32,8 +32,8 @@ Model options (ModelOptions; one set per engine - a different input size or thre
                      .instances.npz: only queries whose class score reaches it are post-processed and returned.
   input_size         'config' (the config's 512 fit, default), N (fit N x N) or 'native' (scale_compat.py;
                      'native' is EXPERIMENTAL, see docs/VALIDATION.md "Input scale")
-  tile, tile_overlap EXPERIMENTAL: native crops of tile x tile px with that overlap, merged (tiling.py); needs input_size
-                     'native' (set automatically); per-crop instances below the score threshold of the merge
+  tile, tile_overlap EXPERIMENTAL: native crops of tile x tile px with that overlap, merged (tiling.py); needs
+                     input_size 'native' (set automatically); per-crop instances below the score threshold of the merge
                      (kept_thr if set, else 0.3) are dropped before the merge.
 Every GPU worker builds its model with scale_compat.build_model and calls kept_queries.configure(model, thr)
 explicitly (off = False), then checks the threshold and the parameter device.
@@ -789,7 +789,7 @@ class Engine:
         self._threads = []
         self._abandon = threading.Event()
         self._stopped = threading.Event()
-        self.failed_event = threading.Event()  # set when the engine fails (state 'failed'); lineformer_serve waits on it
+        self.failed_event = threading.Event()  # set when the engine fails; lineformer_serve waits on it
         self._stopping_workers = False
         self._job_seq = 0
         self.engine_info = None

@@ -66,9 +66,7 @@ def test_pipeline_for(cfg, size, pad_divisor=None):
     inner = [t for t in aug['transforms'] if t['type'] not in ('Resize', 'Pad')]
     if [t['type'] for t in aug['transforms']].count('Resize') != 1:
         raise ValueError('expected exactly one Resize in MultiScaleFlipAug.transforms')
-    try:
-        norm_at = [t['type'] for t in inner].index('Normalize')
-    except ValueError:
+    if 'Normalize' not in [t['type'] for t in inner]:
         raise ValueError('expected a Normalize step in MultiScaleFlipAug.transforms')
     if size == 'native':
         pad_divisor = SIZE_DIVISOR if pad_divisor is None else pad_divisor

@@ -153,8 +153,10 @@ def test_split_instance_joins_only_its_best_partner():
     # crop 0 sees the whole line as one instance; crop 1 sees it as two pieces that both reach the overlap
     boxes = tiling.crop_boxes(H, W, 512, 128)
     (b0, b1) = boxes
-    p1 = gt.copy(); p1[:, 600:] = False
-    p2 = gt.copy(); p2[:, :420] = False
+    p1 = gt.copy()
+    p1[:, 600:] = False
+    p2 = gt.copy()
+    p2[:, :420] = False
     tiles = [(b0, np.array([0.9]), gt[None, b0[0]:b0[2], b0[1]:b0[3]]),
              (b1, np.array([0.9, 0.8]), np.stack([p1[b1[0]:b1[2], b1[1]:b1[3]], p2[b1[0]:b1[2], b1[1]:b1[3]]]))]
     bb, masks, info = tiling.merge_instances(tiles, H, W)

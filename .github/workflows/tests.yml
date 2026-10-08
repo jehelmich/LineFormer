@@ -5,6 +5,8 @@
 # (third_party/mmcv) and the vendored mmdetection, at the versions of rocm/install_rocm.sh. Nothing is compiled.
 # No checkpoint and no GPU: tests/test_model_cpu.py builds the model with random weights and runs one forward and
 # get_dataseries on the demo image; tests that need more are skipped with the reason printed by pytest -rs.
+# Lint: ruff on the fork's own files only (pyproject.toml [tool.ruff]; upstream and vendored code is not
+# linted).
 name: tests
 
 on:
@@ -14,6 +16,18 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install ruff
+        run: python -m pip install ruff==0.16.10
+      - name: Ruff
+        run: ruff check
+
   unit:
     runs-on: ubuntu-26.04
     steps:

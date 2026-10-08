@@ -44,6 +44,10 @@
   within the GPU's run-to-run variation; PASS 72/72 against the original stack (`docs/VALIDATION.md`).
 
 ### Tests
+- ruff (`pyproject.toml` `[tool.ruff]`, rules E, F, W, line length 120) on the fork's own files only (those with
+  the SPDX header; upstream files and the vendored `mmdetection/`, `third_party/` are not linted); a `lint` job in
+  CI. Findings fixed without behaviour change (an unused variable in `scale_compat.py`, long lines, an ambiguous
+  name, semicolons in a test).
 - `tests/test_mmcv_subset.py`: the import closure (infer, engine, mmdet, the model built from the config) loads no
   compiled mmcv code; every stand-in raises when used; msda_compat without a kernel.
 - CI installs the mmcv subset and the vendored mmdet (nothing to compile), so the model-stack tests run there

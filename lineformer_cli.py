@@ -168,7 +168,8 @@ def main_single(argv=None):
             tmp.replace(a.out / f'{p.stem}.json')
             if a.masks:
                 np.savez_compressed(a.out / f'{p.stem}.masks.npz', shape=np.array(img.shape[:2]),
-                                    masks=np.packbits(np.array([m > 0 for m in masks], dtype=bool).reshape(len(masks), -1), axis=1))
+                                    masks=np.packbits(np.array([m > 0 for m in masks], dtype=bool)
+                                                      .reshape(len(masks), -1), axis=1))
             if (i + 1) % 50 == 0:
                 print(i + 1, 'done', round(time.time() - t0), 's', flush=True)
     print('finished', len(todo), round(time.time() - t0), 's', flush=True)
