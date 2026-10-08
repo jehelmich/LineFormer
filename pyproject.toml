@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lineformer"
-version = "0.2.0"
+version = "0.3.0"
 description = "LineFormer line chart data extraction (Lal et al., ICDAR 2023), runnable on CPU, CUDA and ROCm GPUs"
 readme = "README.md"
 requires-python = ">=3.8"
